@@ -1,0 +1,28 @@
+name: urease-mining
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - openjdk=17
+  - nextflow>=24.04
+  - bakta>=1.9.0
+  - checkm2
+  - quast
+  - blast>=2.14.0
+  - hmmer>=3.3.2
+  - mafft>=7.520
+  - trimal>=1.4.1
+  - iqtree>=2.2.0
+  - clinker
+  - pandas
+  - tqdm
+  - biopython
+  - requests
+  - curl
+  - tar
+  - gzip
+  - pip
+  - pip:
+    - ncbi-datasets-cli
