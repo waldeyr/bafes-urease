@@ -76,6 +76,41 @@ chmod +x run.sh
 ./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
+### Database Version Checking
+
+Databases are not only checked for existence — the installed version is checked too. This matters
+because the source URLs are **rolling**: `Pfam/current_release` serves different releases over
+time, so "the file exists" does not say *which* release sits on disk.
+
+`run.sh` records the downloaded version under `db/.versions/` and compares it against what is
+available:
+
+| Database | Local version | Available version |
+| :--- | :--- | :--- |
+| Pfam | `db/.versions/pfam` (release recorded at download) | `Pfam.version.gz` at EMBL-EBI |
+| Bakta | `major.minor` from `version.json` + type in `db/.versions/bakta_type` | `bakta_db list` |
+| CheckM2 | DIAMOND db filename (e.g. `uniref100.KO.1.dmnd`) | no queryable index |
+| AMRFinderPlus | target of the `amrfinderplus-db/latest` symlink | queried by `amrfinder_update` |
+| UniProt references | `uniprot_release` in `data/urease_references.provenance.txt` | `x-uniprot-release` header from the REST API |
+
+**Nothing is re-downloaded while the database exists**, not even on version drift: `--bootstrap`
+only warns and keeps the local copy. Re-fetching the full Bakta DB means ~75 GB and hours of
+network, so updating is always explicit, via `--update-db`. With no network to query the remote
+version, the local copy is kept without error.
+
+The UniProt references come from a **live** query (`fetch_references.py`) whose result set changes
+with every release. What identifies the local FASTA is therefore the release stamped into
+`data/urease_references.provenance.txt` — alongside the record count and `sha256`. A FASTA
+generated before that record has no known release: `--bootstrap` warns and keeps the file.
+
+When updating (Bakta and CheckM2), the current database is moved to `.old` and only discarded once
+the new one arrives intact; if the download fails, the working database is restored, not lost.
+
+```bash
+# Check versions and update only what drifted
+./run.sh --bootstrap --update-db
+```
+
 ### Automatic `screen` Session
 
 Every `run.sh` invocation creates its own **detached** `screen` session and returns the prompt
@@ -107,6 +142,7 @@ with a warning. A second invocation of the same phase is refused (exit 8) rather
 | `--force-rebuild` | Rebuilds the Docker image even if it already exists |
 | `--bakta-db-type light` | Downloads the reduced Bakta database (~10 GB instead of ~75 GB) |
 | `--skip-bakta-db` | Skips the Bakta database download (use if you already have one at `--bakta-db`) |
+| `--update-db` | Re-downloads databases whose version drifted from the available one (without it, only warns) |
 | `--runtime local` | Runs on the host without a container (requires a preconfigured Conda/Mamba env) |
 | `--no-screen` | Runs in the foreground, without creating a session |
 | `--wait` | Blocks until the session finishes and propagates the real exit code |
@@ -153,18 +189,22 @@ NCBI genomes fails explicitly (exit != 0) instead of substituting a plausible-lo
   completeness/contamination values.
 - **Annotation.** Without the Bakta database, `BAKTA_ANNOTATE` fails. There is no substitute
   annotation with invented genes.
-- **References.** The 22 sequences in [urease_references.fasta](data/urease_references.fasta)
-  are downloaded from UniProt using accessions pinned in
-  [urease_reference_accessions.tsv](data/urease_reference_accessions.tsv), with each sequence's
-  length verified against its expected value. Regenerate with `python3 bin/fetch_references.py`.
+- **References.** The sequences in [urease_references.fasta](data/urease_references.fasta) are
+  downloaded from UniProt via a REST query: reviewed (Swiss-Prot) bacterial (`taxonomy_id:2`)
+  urease proteins. Nothing is synthesised locally — a network failure, a truncated response or
+  an empty result set aborts without writing the FASTA. Regenerate with
+  `python3 bin/fetch_references.py`.
 - **Synteny and phylogeny.** No placeholder HTML and no partial trees. With fewer than 3 UreC
   sequences, that is recorded in `phylogeny_status.txt` as a legitimate outcome — no tree is
   possible — and no tree file is written.
 
-Curated reference set: *Sporosarcina pasteurii* (ureA–G, complete reviewed operon),
-*Bacillus subtilis* 168 (ureA–C), *Bacillus* sp. TB-90 (ureD–H), *Prochlorococcus marinus*
-MED4 (urtA–E), *Oleomonas sagaranensis* (urea carboxylase), *Pseudomonas* sp. ADP
-(allophanate hydrolase AtzF).
+Reference set — query `(urease AND (taxonomy_id:2)) AND (reviewed:true)` against
+`https://rest.uniprot.org/uniprotkb/stream`, with a sanity floor of 100 sequences (below that the
+response is treated as truncated and aborts). The set is **live**: it tracks UniProt and changes
+with every release (3108 sequences on release 2026_02). Reproducibility does not rest on a fixed
+accession list but on the provenance record written next to the FASTA
+(`data/urease_references.provenance.txt` — release, date, count and `sha256`). To pin a different
+slice, use `--query` or `--url`.
 
 ---
 

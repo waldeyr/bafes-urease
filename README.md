@@ -207,10 +207,10 @@ substituir a saída por um valor plausível. Em particular:
   completude/contaminação escritos no código.
 - **Anotação.** Sem o banco do Bakta, [BAKTA_ANNOTATE](main.nf) falha. Não há anotação
   substituta com genes inventados.
-- **Referências.** As 22 sequências de [urease_references.fasta](data/urease_references.fasta)
-  são baixadas do UniProt a partir de accessions fixadas em
-  [urease_reference_accessions.tsv](data/urease_reference_accessions.tsv), com o comprimento
-  de cada sequência conferido contra o valor esperado. Regenere com:
+- **Referências.** As sequências de [urease_references.fasta](data/urease_references.fasta) são
+  baixadas do UniProt por uma consulta REST: proteínas de urease de bactérias
+  (`taxonomy_id:2`) revisadas (Swiss-Prot). Nada é sintetizado localmente — falha de rede,
+  resposta truncada ou conjunto vazio abortam sem escrever o FASTA. Regenere com:
   ```bash
   python3 bin/fetch_references.py
   ```
@@ -218,16 +218,23 @@ substituir a saída por um valor plausível. Em particular:
   menos de 3 sequências de UreC, isso é registrado em `phylogeny_status.txt` como resultado
   legítimo — não há árvore possível — e nenhum arquivo de árvore é escrito.
 
-### Conjunto de referências curadas
+### Conjunto de referências
 
-| Origem | Genes | Observação |
-| :--- | :--- | :--- |
-| *Sporosarcina pasteurii* (ex-*Bacillus pasteurii*) | ureA, ureB, ureC, ureD, ureE, ureF, ureG | Operon completo revisado (SwissProt); modelo ureolítico de referência |
-| *Bacillus subtilis* 168 | ureA, ureB, ureC | Subunidades estruturais revisadas |
-| *Bacillus* sp. TB-90 | ureD, ureE, ureF, ureG, ureH | Acessórias revisadas |
-| *Prochlorococcus marinus* MED4 | urtA–urtE | Operon de transporte de ureia (PMM0970–0974) |
-| *Oleomonas sagaranensis* | uc | Urease carboxilase bacteriana caracterizada (EC 6.3.4.6) |
-| *Pseudomonas* sp. ADP | ah | Alofanato hidrolase AtzF revisada (EC 3.5.1.54) |
+| Item | Valor |
+| :--- | :--- |
+| Consulta | `(urease AND (taxonomy_id:2)) AND (reviewed:true)` |
+| Endpoint | `https://rest.uniprot.org/uniprotkb/stream` (FASTA comprimido) |
+| Escopo | Proteínas de urease de bactérias, revisadas (Swiss-Prot) |
+| Piso de sanidade | 100 sequências; abaixo disso a resposta é tratada como truncada e aborta |
+| Procedência | `data/urease_references.provenance.txt` — release, data, contagem e `sha256` |
+
+O conjunto é **vivo**: acompanha o UniProt e muda a cada release (na release 2026_02 são 3108
+sequências). A reprodutibilidade não vem de uma lista fixa de accessions, e sim do registro de
+procedência gravado ao lado do FASTA. Para fixar um recorte diferente, use `--query` ou `--url`:
+
+```bash
+python3 bin/fetch_references.py --query '(urease AND (taxonomy_id:1386)) AND (reviewed:true)'
+```
 
 ---
 
@@ -279,6 +286,40 @@ Execute a sequência de 3 passos recomendada:
 
 O `--bootstrap` é idempotente: cada etapa concluída é pulada nas execuções seguintes.
 
+##### Verificação de versão dos bancos
+
+Os bancos não são só verificados por existência — a versão instalada também é conferida. Isso
+importa porque as URLs de origem são **rolantes**: `Pfam/current_release` serve releases
+diferentes ao longo do tempo, então "o arquivo existe" não diz *qual* release está no disco.
+
+O `run.sh` registra a versão baixada em `db/.versions/` e a compara com a disponível:
+
+| Banco | Versão local | Versão disponível |
+| :--- | :--- | :--- |
+| Pfam | `db/.versions/pfam` (release gravada no download) | `Pfam.version.gz` no EMBL-EBI |
+| Bakta | `major.minor` do `version.json` + tipo em `db/.versions/bakta_type` | `bakta_db list` |
+| CheckM2 | nome do DIAMOND db (ex.: `uniref100.KO.1.dmnd`) | sem índice consultável |
+| AMRFinderPlus | alvo do symlink `amrfinderplus-db/latest` | consultada pelo `amrfinder_update` |
+| Referências UniProt | `uniprot_release` em `data/urease_references.provenance.txt` | cabeçalho `x-uniprot-release` da API REST |
+
+**Nada é rebaixado enquanto o banco existir**, nem quando a versão diverge: o `--bootstrap`
+apenas avisa e mantém a cópia local. Rebaixar o Bakta full são ~75 GB e horas de rede, então a
+atualização é sempre explícita, via `--update-db`. Sem rede para consultar a versão remota, a
+cópia local é mantida sem erro.
+
+As referências do UniProt vêm de uma consulta **viva** (`fetch_references.py`), cujo conjunto muda
+a cada release. Por isso o que identifica o FASTA local é a release gravada em
+`data/urease_references.provenance.txt` — junto da contagem e do `sha256`. Um FASTA gerado antes
+desse registro fica sem release conhecida: o `--bootstrap` avisa e mantém o arquivo.
+
+Ao atualizar (Bakta e CheckM2), o banco atual é movido para `.old` e só descartado depois que o
+novo chega inteiro; se o download falhar, o banco que já funcionava é restaurado em vez de perdido.
+
+```bash
+# Confere versões e atualiza só o que divergiu
+./run.sh --bootstrap --update-db
+```
+
 #### 4. Sessão `screen` automática
 
 Toda invocação do `run.sh` cria a sua própria sessão `screen` **destacada** e devolve o prompt
@@ -310,6 +351,7 @@ com um aviso. Uma segunda invocação da mesma fase é recusada (exit 8) em vez 
 | `--force-rebuild` | Reconstrói a imagem Docker mesmo que ela já exista |
 | `--bakta-db-type light` | Baixa o banco reduzido do Bakta (~10 GB em vez de ~75 GB) |
 | `--skip-bakta-db` | Não baixa o banco do Bakta (use se já tiver um em `--bakta-db`) |
+| `--update-db` | Rebaixa os bancos cuja versão divergiu da disponível (sem ele, só avisa) |
 | `--runtime local` | Executa no host, sem container (exige Conda/Mamba já configurado) |
 | `--no-screen` | Executa em primeiro plano, sem criar sessão |
 | `--wait` | Bloqueia até a sessão terminar e propaga o código de saída real |

@@ -109,6 +109,22 @@ def _ncbi_accession_exists(acc, delay):
     return False, None
 
 
+DB_VERSION_DIR = "db/.versions"
+
+
+def recorded_version(key):
+    """
+    PT-BR: Lê a versão que o run.sh registrou ao baixar o banco. Ver 'db_version_set'.
+    EN-US: Reads the version run.sh recorded when it downloaded the database. See 'db_version_set'.
+    """
+    path = os.path.join(DB_VERSION_DIR, key)
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            return handle.readline().strip() or None
+    except OSError:
+        return None
+
+
 def check_pfam_url(pfam_path=None):
     """
     PT-BR: Confirma o Pfam local ou testa o repositório do EMBL-EBI (não bloqueante).
@@ -116,7 +132,11 @@ def check_pfam_url(pfam_path=None):
     """
     print("\n>>> [PRE-CHECK 2/5] Verificando Pfam HMM (EMBL-EBI FTP)...")
     if pfam_path and os.path.exists(pfam_path) and os.path.getsize(pfam_path) > 0:
-        print(f"  [OK] Pfam local encontrado em / Local Pfam found at: {pfam_path}")
+        version = recorded_version("pfam")
+        suffix = f" (release {version})" if version else ""
+        print(f"  [OK] Pfam local encontrado em / Local Pfam found at: {pfam_path}{suffix}")
+        if not version:
+            print("  [INFO] Release não registrada / Release not recorded: baixado antes do registro de versões.")
         return True
 
     url = "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz"
@@ -134,8 +154,10 @@ def check_bakta_db(bakta_db_path):
     EN-US: Verifies the local Bakta database or the availability of the Zenodo record.
     """
     print("\n>>> [PRE-CHECK 3/5] Verificando banco do Bakta / Checking Bakta database...")
-    if bakta_db_path and os.path.exists(os.path.join(bakta_db_path, "version.json")):
-        print(f"  [OK] Banco local do Bakta encontrado em / Local Bakta DB found at: {bakta_db_path}")
+    version_json = os.path.join(bakta_db_path, "version.json") if bakta_db_path else None
+    if version_json and os.path.exists(version_json):
+        label = _bakta_version_label(version_json)
+        print(f"  [OK] Banco local do Bakta encontrado em / Local Bakta DB found at: {bakta_db_path}{label}")
         return True
 
     if bakta_db_path and os.path.isdir(bakta_db_path):
@@ -156,6 +178,27 @@ def check_bakta_db(bakta_db_path):
     print(f"  [ERRO/ERROR] Falha ao acessar Bakta DB Zenodo / Failed to access Bakta DB Zenodo: {error}")
     print("               Baixe o banco com / Download the database with: ./run.sh --bootstrap")
     return False
+
+
+def _bakta_version_label(version_json):
+    """
+    PT-BR: Monta ' (vMAJOR.MINOR/tipo)' a partir do version.json do bakta e do tipo
+           registrado pelo run.sh. Devolve '' se o arquivo não for legível.
+    EN-US: Builds ' (vMAJOR.MINOR/type)' from bakta's version.json plus the type recorded
+           by run.sh. Returns '' when the file is not readable.
+    """
+    try:
+        with open(version_json, 'r', encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    major, minor = data.get("major"), data.get("minor")
+    if major is None or minor is None:
+        return ""
+
+    db_type = recorded_version("bakta_type")
+    return f" (v{major}.{minor}/{db_type})" if db_type else f" (v{major}.{minor})"
 
 
 def check_references(ref_fasta):

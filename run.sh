@@ -15,6 +15,7 @@ VERBOSE=false
 RESUME=false
 FORCE_REBUILD=false
 SKIP_BAKTA_DB=false
+UPDATE_DB=false
 NO_SCREEN=false
 WAIT_FOR_SESSION=false
 RUNTIME="docker"
@@ -22,7 +23,6 @@ CONTAINER_IMAGE="bafes-urease"
 BAKTA_DB_TYPE="full"
 ACCESSIONS="data/accessions.tsv"
 REFERENCES="data/urease_references.fasta"
-REFERENCE_ACCESSIONS="data/urease_reference_accessions.tsv"
 PFAM="Pfam-A.hmm"
 BAKTA_DB="db/db"
 CHECKM2_DB_DIR="db/checkm2"
@@ -60,6 +60,8 @@ usage() {
     echo "  --force-rebuild                 Reconstrói a imagem mesmo se existir / Rebuilds image even if present"
     echo "  --bakta-db-type TYPE            Banco Bakta: full | light (default: full)"
     echo "  --skip-bakta-db                 Não baixa o banco Bakta / Skips Bakta DB download"
+    echo "  --update-db                     Rebaixa bancos cuja versão divergiu da disponível"
+    echo "                                  Re-downloads databases whose version drifted from the available one"
     echo "  --accessions PATH               Caminho accessions.tsv / Path to accessions.tsv (default: data/accessions.tsv)"
     echo "  --references PATH               Caminho referencias FASTA / Path to references FASTA (default: data/urease_references.fasta)"
     echo "  --pfam PATH                     Caminho Pfam-A.hmm / Path to Pfam-A.hmm (default: Pfam-A.hmm)"
@@ -93,6 +95,7 @@ while [[ $# -gt 0 ]]; do
         --resume) RESUME=true; shift ;;
         --force-rebuild) FORCE_REBUILD=true; shift ;;
         --skip-bakta-db) SKIP_BAKTA_DB=true; shift ;;
+        --update-db) UPDATE_DB=true; shift ;;
         --no-screen) NO_SCREEN=true; shift ;;
         --wait) WAIT_FOR_SESSION=true; shift ;;
         --runtime) RUNTIME="$2"; shift 2 ;;
@@ -315,6 +318,128 @@ human_gb() {
     awk -v kb="$1" 'BEGIN { printf "%.1f", kb / 1024 / 1024 }'
 }
 
+# ==============================================================================
+# PT-BR: Registro de versões dos bancos.
+#        Os bancos são grandes (Pfam ~1,5 GB, Bakta full ~75 GB, CheckM2 ~3 GB) e as
+#        URLs de origem são ROLANTES: o mesmo endereço serve releases diferentes ao
+#        longo do tempo. Só "o arquivo existe" não diz QUAL versão está no disco.
+#        Guardamos a versão baixada aqui para comparar sem rebaixar nada.
+# EN-US: Database version registry.
+#        The databases are large (Pfam ~1.5 GB, Bakta full ~75 GB, CheckM2 ~3 GB) and the
+#        source URLs are ROLLING: the same address serves different releases over time.
+#        "The file exists" alone does not say WHICH version sits on disk. We record the
+#        downloaded version here so it can be compared without re-downloading anything.
+# ==============================================================================
+DB_VERSION_DIR="db/.versions"
+
+# PT-BR: Lê a versão registrada de um banco / EN-US: Reads a database's recorded version
+db_version_get() {
+    local file="$DB_VERSION_DIR/$1"
+    [ -s "$file" ] || return 1
+    head -n1 "$file"
+}
+
+# PT-BR: Registra a versão instalada / EN-US: Records the installed version
+db_version_set() {
+    mkdir -p "$DB_VERSION_DIR"
+    printf '%s\n' "$2" > "$DB_VERSION_DIR/$1"
+}
+
+# PT-BR: Compara versão local x remota e define DB_DECISION=skip|update.
+#        Padrão conservador: se o banco já existe, NADA é rebaixado — nem quando a
+#        versão divergiu. Uma divergência só vira download com --update-db explícito,
+#        porque rebaixar o Bakta full são ~75 GB e horas de rede.
+#        $1 rótulo, $2 versão local (vazio = desconhecida), $3 versão remota (vazio = indisponível)
+# EN-US: Compares local vs remote version and sets DB_DECISION=skip|update.
+#        Conservative default: if the database is already there, NOTHING is re-downloaded —
+#        not even on version drift. A drift only becomes a download with an explicit
+#        --update-db, because re-fetching the full Bakta DB means ~75 GB and hours of network.
+#        $1 label, $2 local version (empty = unknown), $3 remote version (empty = unavailable)
+db_decide() {
+    local label="$1" local_ver="$2" remote_ver="$3"
+    DB_DECISION="skip"
+
+    if [ -n "$local_ver" ] && [ -n "$remote_ver" ] && [ "$local_ver" = "$remote_ver" ]; then
+        echo "        Versão local igual à disponível / Local version matches the available one: $local_ver"
+        echo "        Nada a baixar / Nothing to download."
+        return 0
+    fi
+
+    if [ -z "$local_ver" ]; then
+        echo "        Versão local desconhecida / Unknown local version (baixado antes do registro de versões)."
+        [ -n "$remote_ver" ] && echo "        Versão disponível / Available version: $remote_ver"
+    elif [ -z "$remote_ver" ]; then
+        echo "        Versão remota indisponível / Remote version unavailable; mantendo a local / keeping local: $local_ver"
+        return 0
+    else
+        echo "        [AVISO/WARNING] Versão divergente / Version drift: local=$local_ver, disponível/available=$remote_ver"
+    fi
+
+    if [ "$UPDATE_DB" = true ]; then
+        echo "        --update-db: rebaixando / re-downloading $label."
+        DB_DECISION="update"
+    else
+        echo "        Mantendo a cópia local / Keeping the local copy. Use --update-db para atualizar / to update."
+    fi
+}
+
+# PT-BR: Release do Pfam publicada no EMBL-EBI. Best-effort: sem rede, ecoa vazio.
+#        O Pfam-A.hmm não carrega a release no cabeçalho — ela só existe neste arquivo.
+# EN-US: Pfam release published at EMBL-EBI. Best-effort: with no network it echoes empty.
+#        Pfam-A.hmm does not carry the release in its header — it only lives in this file.
+pfam_remote_version() {
+    curl -fsSL --connect-timeout 10 --max-time 30 \
+        "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam.version.gz" 2>/dev/null \
+        | gunzip -c 2>/dev/null \
+        | awk -F':[[:space:]]*' '/^Pfam release/ { gsub(/[[:space:]]/, "", $2); print $2; exit }'
+}
+
+# PT-BR: Versão do banco Bakta local, lida do version.json que o próprio bakta_db escreve.
+# EN-US: Local Bakta DB version, read from the version.json that bakta_db itself writes.
+bakta_local_version() {
+    local vj="$1/version.json" major minor
+    [ -s "$vj" ] || return 1
+    major="$(tr -d ' \n' < "$vj" | sed -n 's/.*"major":\([0-9][0-9]*\).*/\1/p')"
+    minor="$(tr -d ' \n' < "$vj" | sed -n 's/.*"minor":\([0-9][0-9]*\).*/\1/p')"
+    [ -n "$major" ] && [ -n "$minor" ] || return 1
+    printf '%s.%s\n' "$major" "$minor"
+}
+
+# PT-BR: Maior versão do banco compatível com o bakta instalado, via 'bakta_db list'.
+#        O parsing é tolerante: só considera colunas no formato N.N.
+# EN-US: Highest DB version compatible with the installed bakta, via 'bakta_db list'.
+#        Parsing is lenient: it only considers columns shaped like N.N.
+bakta_remote_version() {
+    in_container bakta_db list 2>/dev/null \
+        | awk '$1 ~ /^[0-9]+\.[0-9]+$/ { print $1 }' \
+        | sort -t. -k1,1n -k2,2n \
+        | tail -n1
+}
+
+# PT-BR: Release do UniProt registrada na procedência do FASTA local. O conjunto de
+#        referências vem de uma consulta VIVA — muda a cada release —, então a release
+#        gravada pelo fetch_references.py é a única "versão" que o FASTA carrega.
+# EN-US: UniProt release recorded in the local FASTA's provenance. The reference set comes
+#        from a LIVE query — it changes with every release — so the release stamped by
+#        fetch_references.py is the only "version" the FASTA carries.
+references_local_release() {
+    local prov="${1%.*}.provenance.txt" release
+    [ -s "$prov" ] || return 1
+    release="$(awk -F'\t' '$1 == "uniprot_release" { print $2; exit }' "$prov")"
+    [ -n "$release" ] && [ "$release" != "unknown" ] || return 1
+    printf '%s\n' "$release"
+}
+
+# PT-BR: Release corrente do UniProt, do cabeçalho x-uniprot-release da API REST.
+#        Best-effort: sem rede, ecoa vazio e a cópia local é mantida.
+# EN-US: Current UniProt release, from the REST API's x-uniprot-release header.
+#        Best-effort: with no network it echoes empty and the local copy is kept.
+uniprot_remote_release() {
+    curl -fsSI --connect-timeout 10 --max-time 30 \
+        "https://rest.uniprot.org/uniprotkb/P41022.fasta" 2>/dev/null \
+        | awk 'tolower($1) == "x-uniprot-release:" { gsub(/\r/, "", $2); print $2; exit }'
+}
+
 if [ "$RUNTIME" = "docker" ]; then
     check_docker
 elif [ "$RUNTIME" = "singularity" ]; then
@@ -351,24 +476,35 @@ EOF
         echo "  [1/5] Accessions já presente / already present: $ACCESSIONS"
     fi
 
-    # PT-BR: As referências são BAIXADAS do UniProt a partir de accessions fixadas.
-    #        Nunca são escritas localmente: um stub inventado geraria evidência falsa
-    #        de BLASTp e contaminaria toda a triagem de candidatos.
-    # EN-US: References are DOWNLOADED from UniProt using pinned accessions. They are
-    #        never written locally: a made-up stub would generate false BLASTp evidence
-    #        and contaminate the whole candidate screening.
-    if [ ! -s "$REFERENCES" ]; then
-        echo "        Baixando referências curadas do UniProt / Downloading curated references from UniProt..."
+    # PT-BR: As referências são BAIXADAS do UniProt por consulta REST (ureases bacterianas
+    #        revisadas). Nunca são escritas localmente: um stub inventado geraria evidência
+    #        falsa de BLASTp e contaminaria toda a triagem de candidatos.
+    # EN-US: References are DOWNLOADED from UniProt via a REST query (reviewed bacterial
+    #        ureases). They are never written locally: a made-up stub would generate false
+    #        BLASTp evidence and contaminate the whole candidate screening.
+    # PT-BR: A "versão" das referências é a release do UniProt gravada na procedência
+    #        pelo fetch_references.py. Sem procedência (FASTA de uma versão anterior do
+    #        script) a release é desconhecida e a cópia local é mantida.
+    # EN-US: The references' "version" is the UniProt release stamped into the provenance
+    #        by fetch_references.py. With no provenance (a FASTA from an earlier version of
+    #        the script) the release is unknown and the local copy is kept.
+    REF_DOWNLOAD=true
+    if [ -s "$REFERENCES" ]; then
+        REF_LOCAL_REL="$(references_local_release "$REFERENCES" || true)"
+        echo "        Referências já presentes / already present: $REFERENCES${REF_LOCAL_REL:+ (UniProt $REF_LOCAL_REL)}"
+        db_decide "referências UniProt / UniProt references" \
+            "$REF_LOCAL_REL" "$(uniprot_remote_release || true)"
+        [ "$DB_DECISION" = "update" ] || REF_DOWNLOAD=false
+    fi
+
+    if [ "$REF_DOWNLOAD" = true ]; then
+        echo "        Baixando referências de urease do UniProt / Downloading urease references from UniProt..."
         mkdir -p "$(dirname "$REFERENCES")"
-        if ! in_container python3 bin/fetch_references.py \
-            --accessions "$REFERENCE_ACCESSIONS" \
-            --out "$REFERENCES"; then
+        if ! in_container python3 bin/fetch_references.py --out "$REFERENCES"; then
             echo "  [ERRO/ERROR] Falha ao obter as referências / Failed to obtain references."
             echo "               Nenhuma sequência será inventada / No sequence will be invented."
             exit 7
         fi
-    else
-        echo "        Referências já presentes / already present: $REFERENCES"
     fi
 
     # --- 1.2 Imagem Docker / Docker image -----------------------------------
@@ -388,10 +524,18 @@ EOF
     fi
 
     # --- 1.3 Pfam-A.hmm ------------------------------------------------------
+    PFAM_DOWNLOAD=true
+    PFAM_REMOTE_VER="$(pfam_remote_version || true)"
+
     if [ -s "$PFAM" ]; then
-        echo "  [3/5] Pfam já presente / already present: $PFAM"
-    else
-        echo "  [3/5] Baixando / Downloading Pfam-A.hmm.gz -> $PFAM ..."
+        PFAM_LOCAL_VER="$(db_version_get pfam || true)"
+        echo "  [3/5] Pfam já presente / already present: $PFAM${PFAM_LOCAL_VER:+ (release $PFAM_LOCAL_VER)}"
+        db_decide "Pfam" "$PFAM_LOCAL_VER" "$PFAM_REMOTE_VER"
+        [ "$DB_DECISION" = "update" ] || PFAM_DOWNLOAD=false
+    fi
+
+    if [ "$PFAM_DOWNLOAD" = true ]; then
+        echo "  [3/5] Baixando / Downloading Pfam-A.hmm.gz -> $PFAM ${PFAM_REMOTE_VER:+(release $PFAM_REMOTE_VER)}..."
         PFAM_DIR="$(dirname "$PFAM")"
         [ "$PFAM_DIR" != "." ] && mkdir -p "$PFAM_DIR"
         PFAM_GZ="${PFAM}.gz"
@@ -411,14 +555,19 @@ EOF
         fi
 
         gunzip -f "$PFAM_GZ"
-        echo "        [OK] Pfam pronto / ready: $PFAM"
+        # PT-BR: Só registramos a versão DEPOIS do arquivo estar íntegro no disco.
+        # EN-US: We only record the version AFTER the file is intact on disk.
+        db_version_set pfam "${PFAM_REMOTE_VER:-desconhecida/unknown}"
+        echo "        [OK] Pfam pronto / ready: $PFAM${PFAM_REMOTE_VER:+ (release $PFAM_REMOTE_VER)}"
     fi
 
     # PT-BR: O hmmscan exige o Pfam indexado pelo hmmpress. Sem os .h3* ele falha
     #        em toda estirpe — indexar uma vez aqui evita repetir por processo.
+    #        Um Pfam recém-baixado invalida os índices antigos: reindexa sempre.
     # EN-US: hmmscan requires Pfam pressed by hmmpress. Without the .h3* files it fails
     #        on every strain — pressing once here avoids repeating it per process.
-    if [ -f "${PFAM}.h3i" ]; then
+    #        A freshly downloaded Pfam invalidates the old indices: always re-press.
+    if [ "$PFAM_DOWNLOAD" = false ] && [ -f "${PFAM}.h3i" ]; then
         echo "        Pfam já indexado / already pressed: ${PFAM}.h3i"
     else
         echo "        Indexando Pfam com hmmpress / Pressing Pfam with hmmpress..."
@@ -429,11 +578,34 @@ EOF
     fi
 
     # --- 1.4 Banco do Bakta / Bakta database --------------------------------
+    # PT-BR: A versão local vem do version.json escrito pelo próprio bakta_db; o tipo
+    #        (full/light) não está lá, então guardamos à parte. Trocar de light para full
+    #        conta como divergência de versão — os bancos não são intercambiáveis.
+    # EN-US: The local version comes from the version.json bakta_db itself writes; the type
+    #        (full/light) is not in it, so we record it separately. Switching light to full
+    #        counts as version drift — the databases are not interchangeable.
+    BAKTA_DOWNLOAD=true
+    BAKTA_LOCAL_VER=""
+
     if [ "$SKIP_BAKTA_DB" = true ]; then
         echo "  [4/5] Download do banco Bakta ignorado / Bakta DB download skipped (--skip-bakta-db)."
+        BAKTA_DOWNLOAD=false
     elif [ -f "$BAKTA_DB/version.json" ]; then
-        echo "  [4/5] Banco Bakta já presente / already present: $BAKTA_DB"
-    else
+        BAKTA_LOCAL_VER="$(bakta_local_version "$BAKTA_DB" || true)"
+        BAKTA_LOCAL_TYPE="$(db_version_get bakta_type || true)"
+        echo "  [4/5] Banco Bakta já presente / already present: $BAKTA_DB${BAKTA_LOCAL_VER:+ (v$BAKTA_LOCAL_VER)}"
+
+        BAKTA_LOCAL_ID=""
+        [ -n "$BAKTA_LOCAL_VER" ] && BAKTA_LOCAL_ID="${BAKTA_LOCAL_VER}/${BAKTA_LOCAL_TYPE:-$BAKTA_DB_TYPE}"
+        BAKTA_REMOTE_VER="$(bakta_remote_version || true)"
+        BAKTA_REMOTE_ID=""
+        [ -n "$BAKTA_REMOTE_VER" ] && BAKTA_REMOTE_ID="${BAKTA_REMOTE_VER}/${BAKTA_DB_TYPE}"
+
+        db_decide "Bakta DB" "$BAKTA_LOCAL_ID" "$BAKTA_REMOTE_ID"
+        [ "$DB_DECISION" = "update" ] || BAKTA_DOWNLOAD=false
+    fi
+
+    if [ "$BAKTA_DOWNLOAD" = true ]; then
         if [ "$BAKTA_DB_TYPE" = "full" ]; then
             MIN_KB=$BAKTA_FULL_MIN_KB
         else
@@ -449,36 +621,108 @@ EOF
             exit 6
         fi
 
+        # PT-BR: O bakta_db extrai por cima; um banco antigo deixaria arquivos órfãos de
+        #        outra release misturados aos novos. Movemos para .old em vez de apagar:
+        #        se o download de horas falhar, o banco que já funcionava é restaurado em
+        #        vez de perdido. A checagem de espaço acima já garante folga para os dois.
+        # EN-US: bakta_db extracts in place; an old database would leave orphan files from
+        #        another release mixed with the new ones. We move it to .old instead of
+        #        deleting: if the hours-long download fails, the working database is restored
+        #        rather than lost. The disk check above already guarantees room for both.
+        BAKTA_OLD=""
+        if [ -n "$BAKTA_LOCAL_VER" ] && [ -d "$BAKTA_DB" ]; then
+            BAKTA_OLD="${BAKTA_DB}.old"
+            rm -rf "${BAKTA_OLD:?}"
+            echo "        Guardando o banco antigo / Setting the old database aside: $BAKTA_DB (v$BAKTA_LOCAL_VER) -> $BAKTA_OLD"
+            mv "$BAKTA_DB" "$BAKTA_OLD"
+        fi
+
         echo "        [AVISO/WARNING] O download do banco '$BAKTA_DB_TYPE' leva horas / takes hours."
         BAKTA_OUT="$(dirname "$BAKTA_DB")"
         mkdir -p "$BAKTA_OUT"
 
         if ! in_container bakta_db download --output "$BAKTA_OUT" --type "$BAKTA_DB_TYPE"; then
             echo "  [ERRO/ERROR] Falha ao baixar o banco do Bakta / Failed to download Bakta DB."
+            if [ -n "$BAKTA_OLD" ] && [ -d "$BAKTA_OLD" ]; then
+                echo "        Restaurando o banco anterior / Restoring the previous database: $BAKTA_OLD -> $BAKTA_DB"
+                rm -rf "${BAKTA_DB:?}"
+                mv "$BAKTA_OLD" "$BAKTA_DB"
+            fi
             exit 6
         fi
 
-        echo "        Atualizando AMRFinderPlus DB / Updating AMRFinderPlus DB..."
-        if ! in_container amrfinder_update --force_update --database "$BAKTA_DB/amrfinderplus-db"; then
-            echo "        [AVISO/WARNING] amrfinder_update falhou / failed; a anotação segue sem AMRFinderPlus."
+        [ -n "$BAKTA_OLD" ] && rm -rf "${BAKTA_OLD:?}"
+        db_version_set bakta_type "$BAKTA_DB_TYPE"
+        echo "        [OK] Banco Bakta pronto / ready: $BAKTA_DB ($(bakta_local_version "$BAKTA_DB" || echo '?')/$BAKTA_DB_TYPE)"
+    fi
+
+    # PT-BR: O amrfinder_update baixa a release MAIS RECENTE sempre que a chamamos, o que
+    #        mudaria a anotação entre execuções sem o usuário pedir. Então só chamamos
+    #        quando o banco ainda não existe, quando o Bakta acabou de ser baixado, ou
+    #        com --update-db. A versão instalada é o alvo do symlink 'latest'.
+    # EN-US: amrfinder_update downloads the LATEST release every time we call it, which
+    #        would change annotation between runs without the user asking. So we only call
+    #        it when the database is missing, when Bakta was just downloaded, or with
+    #        --update-db. The installed version is the target of the 'latest' symlink.
+    if [ "$SKIP_BAKTA_DB" = false ] && [ -d "$BAKTA_DB" ]; then
+        AMR_DB="$BAKTA_DB/amrfinderplus-db"
+        AMR_LOCAL_VER=""
+        if [ -e "$AMR_DB/latest" ]; then
+            AMR_LINK="$(readlink "$AMR_DB/latest" 2>/dev/null || true)"
+            AMR_LOCAL_VER="$(basename "${AMR_LINK:-latest}")"
         fi
-        echo "        [OK] Banco Bakta pronto / ready: $BAKTA_DB"
+
+        if [ -n "$AMR_LOCAL_VER" ] && [ "$UPDATE_DB" = false ] && [ "$BAKTA_DOWNLOAD" = false ]; then
+            echo "        AMRFinderPlus DB já presente / already present: $AMR_LOCAL_VER — nada a baixar / nothing to download."
+        else
+            AMRFINDER_FLAGS=""
+            [ "$UPDATE_DB" = true ] && AMRFINDER_FLAGS="--force_update"
+            echo "        Atualizando AMRFinderPlus DB / Updating AMRFinderPlus DB..."
+            if ! in_container amrfinder_update $AMRFINDER_FLAGS --database "$AMR_DB"; then
+                echo "        [AVISO/WARNING] amrfinder_update falhou / failed; a anotação segue sem AMRFinderPlus."
+            fi
+        fi
     fi
 
     # --- 1.4b Banco do CheckM2 / CheckM2 database ---------------------------
     # PT-BR: O QC_CHECKM2 executa o CheckM2 de verdade e exige este banco (~3 GB).
     #        Antes o processo gravava completude/contaminação fixas no código.
+    #        O CheckM2 não publica índice de versões consultável: a identidade do banco é
+    #        o nome do DIAMOND db (ex.: uniref100.KO.1.dmnd). Presente => não baixa.
     # EN-US: QC_CHECKM2 actually runs CheckM2 and requires this database (~3 GB).
     #        The process used to write hardcoded completeness/contamination values.
-    if [ -n "$(find "$CHECKM2_DB_DIR" -name '*.dmnd' 2>/dev/null | head -1)" ]; then
+    #        CheckM2 publishes no queryable version index: the database's identity is the
+    #        DIAMOND db filename (e.g. uniref100.KO.1.dmnd). Present => no download.
+    CHECKM2_DMND="$(find "$CHECKM2_DB_DIR" -name '*.dmnd' 2>/dev/null | head -1)"
+    if [ -n "$CHECKM2_DMND" ] && [ "$UPDATE_DB" = false ]; then
         echo "        Banco CheckM2 já presente / already present: $CHECKM2_DB_DIR"
+        echo "        Versão / Version: $(db_version_get checkm2 || basename "$CHECKM2_DMND")"
     else
+        # PT-BR: Mesma proteção do Bakta: o banco atual só é descartado depois que o
+        #        novo chega inteiro. Ver o bloco 1.4.
+        # EN-US: Same protection as Bakta: the current database is only discarded after
+        #        the new one arrives intact. See block 1.4.
+        CHECKM2_OLD=""
+        if [ -n "$CHECKM2_DMND" ]; then
+            CHECKM2_OLD="${CHECKM2_DB_DIR}.old"
+            rm -rf "${CHECKM2_OLD:?}"
+            echo "        --update-db: rebaixando o banco do CheckM2 / re-downloading the CheckM2 database."
+            mv "$CHECKM2_DB_DIR" "$CHECKM2_OLD"
+        fi
         echo "        Baixando banco do CheckM2 (~3 GB) / Downloading CheckM2 database (~3 GB)..."
         mkdir -p "$CHECKM2_DB_DIR"
         if ! in_container checkm2 database --download --path "$CHECKM2_DB_DIR"; then
             echo "  [ERRO/ERROR] Falha ao baixar o banco do CheckM2 / Failed to download the CheckM2 database."
+            if [ -n "$CHECKM2_OLD" ] && [ -d "$CHECKM2_OLD" ]; then
+                echo "        Restaurando o banco anterior / Restoring the previous database: $CHECKM2_OLD -> $CHECKM2_DB_DIR"
+                rm -rf "${CHECKM2_DB_DIR:?}"
+                mv "$CHECKM2_OLD" "$CHECKM2_DB_DIR"
+            fi
             exit 6
         fi
+        [ -n "$CHECKM2_OLD" ] && rm -rf "${CHECKM2_OLD:?}"
+        CHECKM2_DMND="$(find "$CHECKM2_DB_DIR" -name '*.dmnd' 2>/dev/null | head -1)"
+        [ -n "$CHECKM2_DMND" ] && db_version_set checkm2 "$(basename "$CHECKM2_DMND")"
     fi
 
     # --- 1.5 Nextflow no host (best-effort) / Host Nextflow (best-effort) ----
