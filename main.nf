@@ -7,6 +7,11 @@ nextflow.enable.dsl = 2
    BAAFES UREASE MINING PIPELINE (DSL2)
    PT-BR: Pipeline de mineração genômica de urease, transporte de ureia e via alternativa.
    EN-US: Genomic mining pipeline for urease, urea transport, and alternative pathways.
+
+   PT-BR: PRINCÍPIO — nenhum processo fabrica dados. Toda etapa que não puder produzir
+          resultado real a partir dos genomas do NCBI falha explicitamente (exit != 0).
+   EN-US: PRINCIPLE — no process fabricates data. Any step that cannot produce a real
+          result from the NCBI genomes fails explicitly (exit != 0).
 ========================================================================================
 */
 
@@ -14,19 +19,8 @@ params.accessions = "data/accessions.tsv"
 params.references = "data/urease_references.fasta"
 params.pfam_hmm   = "Pfam-A.hmm"
 params.bakta_db   = "db/db"
+params.checkm2_db = "db/checkm2/CheckM2_database/uniref100.KO.1.dmnd"
 params.outdir     = "results"
-
-log.info """
-========================================================================================
- BAAFES-UREASE-MINING PIPELINE
- ========================================================================================
- Accessions File  : ${params.accessions}
- References FASTA : ${params.references}
- Pfam HMM File    : ${params.pfam_hmm}
- Bakta DB Path    : ${params.bakta_db}
- Output Directory : ${params.outdir}
-========================================================================================
-"""
 
 // PT-BR: Processo 0 - Validação Prévia de Recursos / EN-US: Process 0 - Pre-flight Resource Check
 process PREFLIGHT_CHECK {
@@ -42,10 +36,11 @@ process PREFLIGHT_CHECK {
 
     script:
     """
-    python3 ${projectDir}/bin/resource_checker.py \
-        --accessions ${accessions_file} \
-        --references ${references_file} \
-        --bakta-db ${params.bakta_db} > preflight_status.txt
+    python3 ${projectDir}/bin/resource_checker.py \\
+        --accessions ${accessions_file} \\
+        --references ${references_file} \\
+        --bakta-db ${params.bakta_db} \\
+        --pfam ${params.pfam_hmm} | tee preflight_status.txt
     """
 }
 
@@ -61,26 +56,17 @@ process DOWNLOAD_GENOME {
     tuple val(strain), path("${strain}.fna"), emit: genome_fasta
 
     script:
+    // PT-BR: O script resolve o WGS master para o assembly (GCA_/GCF_) e valida o
+    //        FASTA obtido. Se o genoma real não vier, ele sai com erro — o processo
+    //        falha e a estirpe NÃO segue no pipeline com dados inventados.
+    // EN-US: The script resolves the WGS master to its assembly (GCA_/GCF_) and
+    //        validates the FASTA. If the real genome does not arrive, it exits with an
+    //        error — the process fails and the strain does NOT continue with made-up data.
     """
-    echo "Baixando genoma / Downloading genome ${accession} (${strain})..."
-    
-    if command -v datasets >/dev/null 2>&1; then
-        datasets download genome accession ${accession} --filename ${strain}.zip || true
-        if [ -f ${strain}.zip ]; then
-            unzip -o ${strain}.zip -d ${strain}_dir
-            find ${strain}_dir -name "*.fna" -exec cp {} ${strain}.fna \\;
-        fi
-    fi
-
-    if [ ! -f ${strain}.fna ] || [ ! -s ${strain}.fna ]; then
-        echo "Fallback NCBI Entrez efetch para ${accession}..."
-        curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=${accession}&rettype=fasta&retmode=text" > ${strain}.fna
-    fi
-
-    if [ ! -s ${strain}.fna ]; then
-        echo ">${strain}_assembly ${species} ${accession}" > ${strain}.fna
-        echo "ATGCGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT" >> ${strain}.fna
-    fi
+    python3 ${projectDir}/bin/download_genome.py \\
+        --accession ${accession} \\
+        --strain ${strain} \\
+        --out ${strain}.fna
     """
 }
 
@@ -97,7 +83,7 @@ process QC_QUAST {
 
     script:
     """
-    quast.py ${genome_fasta} -o . || echo "QUAST ok"
+    quast.py ${genome_fasta} -o . --threads ${task.cpus}
     """
 }
 
@@ -110,12 +96,29 @@ process QC_CHECKM2 {
     tuple val(strain), path(genome_fasta)
 
     output:
-    path "checkm2_out.tsv"
+    path "${strain}_checkm2.tsv"
 
     script:
+    // PT-BR: CheckM2 é executado de verdade. Sem banco, o processo falha — não há
+    //        mais valores de completude/contaminação fixados no código.
+    // EN-US: CheckM2 actually runs. Without its database the process fails — there are
+    //        no more hardcoded completeness/contamination values.
     """
-    echo "strain\tcompleteness\tcontamination" > checkm2_out.tsv
-    echo "${strain}\t99.5\t0.2" >> checkm2_out.tsv
+    if [ ! -f "${params.checkm2_db}" ]; then
+        echo "[ERRO/ERROR] Banco do CheckM2 não encontrado / CheckM2 database not found: ${params.checkm2_db}" >&2
+        echo "             Rode / Run: ./run.sh --bootstrap" >&2
+        exit 1
+    fi
+
+    checkm2 predict \\
+        --input ${genome_fasta} \\
+        --output-directory checkm2_out \\
+        --database_path ${params.checkm2_db} \\
+        --threads ${task.cpus} \\
+        --extension .fna \\
+        --force
+
+    cp checkm2_out/quality_report.tsv ${strain}_checkm2.tsv
     """
 }
 
@@ -131,19 +134,23 @@ process BAKTA_ANNOTATE {
     tuple val(strain), path("${strain}.gff3"), path("${strain}.faa"), path("${strain}.json"), path("${strain}.gbff"), emit: bakta_results
 
     script:
+    // PT-BR: Sem banco do Bakta o processo falha. A anotação fictícia com um gene
+    //        ureC inventado foi removida — ela produzia candidatos falsos.
+    // EN-US: Without the Bakta database the process fails. The fake annotation with a
+    //        made-up ureC gene was removed — it produced false candidates.
     """
-    if [ -d "${params.bakta_db}" ]; then
-        bakta --db ${params.bakta_db} --prefix ${strain} --output . ${genome_fasta} --force || true
+    if [ ! -d "${params.bakta_db}" ]; then
+        echo "[ERRO/ERROR] Banco do Bakta não encontrado / Bakta database not found: ${params.bakta_db}" >&2
+        echo "             Rode / Run: ./run.sh --bootstrap" >&2
+        exit 1
     fi
 
-    if [ ! -f "${strain}.json" ]; then
-        echo '{"features":[{"id":"feat_1","gene":"ureC","product":"Urease alpha subunit","dbxrefs":["EC:3.5.1.5"]}]}' > ${strain}.json
-        echo "##gff-version 3" > ${strain}.gff3
-        echo "${strain}\tBakta\tgene\t1\t1000\t.\t+\t.\tID=feat_1;Name=ureC" >> ${strain}.gff3
-        echo ">feat_1 ureC" > ${strain}.faa
-        echo "MKLSPREKDKLLLFTADACIAEGRIVTVEEVIEKGIVTLTGIAHEEVDIPLGTHLVEVVP" >> ${strain}.faa
-        echo "LOCUS ${strain} 1000 bp DNA" > ${strain}.gbff
-    fi
+    bakta --db ${params.bakta_db} \\
+        --prefix ${strain} \\
+        --output . \\
+        --threads ${task.cpus} \\
+        --force \\
+        ${genome_fasta}
     """
 }
 
@@ -155,28 +162,45 @@ process EXTRACT_CANDIDATES {
     input:
     tuple val(strain), path(gff3), path(faa), path(json_file), path(gbff)
     path ref_fasta
-    path pfam_hmm
+    path pfam_files
 
     output:
     tuple val(strain), path("${strain}_candidates.tsv"), emit: candidates_tsv
     path "${strain}.gbff", emit: gbff_out
+    path "${strain}_blast.tsv"
+    path "${strain}_hmmer.tbl"
 
     script:
+    def pfam_base = file(params.pfam_hmm).name
+    // PT-BR: BLASTp já filtra por E-value; identidade e cobertura são aplicadas no
+    //        script Python. Erros de ferramenta não são mais mascarados com `|| true`.
+    // EN-US: BLASTp already filters by E-value; identity and coverage are applied in the
+    //        Python script. Tool errors are no longer masked with `|| true`.
     """
-    makeblastdb -in ${ref_fasta} -dbtype prot -out ref_db || true
-    blastp -query ${faa} -db ref_db -out ${strain}_blast.tsv -outfmt 6 || touch ${strain}_blast.tsv
+    makeblastdb -in ${ref_fasta} -dbtype prot -out ref_db
 
-    if [ -f "${pfam_hmm}" ]; then
-        hmmscan --domtblout ${strain}_hmmer.tbl ${pfam_hmm} ${faa} || touch ${strain}_hmmer.tbl
-    else
-        touch ${strain}_hmmer.tbl
+    blastp -query ${faa} \\
+        -db ref_db \\
+        -out ${strain}_blast.tsv \\
+        -outfmt '6 qseqid sseqid pident length qstart qend qlen slen evalue bitscore' \\
+        -evalue 1e-5 \\
+        -num_threads ${task.cpus}
+
+    if [ ! -f "${pfam_base}.h3i" ]; then
+        echo "[ERRO/ERROR] Pfam não indexado / Pfam not pressed: ${pfam_base}.h3i ausente." >&2
+        echo "             Rode / Run: ./run.sh --bootstrap" >&2
+        exit 1
     fi
 
-    python3 ${projectDir}/bin/extract_urease_candidates.py \
-        --strain ${strain} \
-        --bakta-json ${json_file} \
-        --blast-tsv ${strain}_blast.tsv \
-        --hmmer-tbl ${strain}_hmmer.tbl \
+    hmmscan --domtblout ${strain}_hmmer.tbl \\
+        --cpu ${task.cpus} \\
+        ${pfam_base} ${faa} > /dev/null
+
+    python3 ${projectDir}/bin/extract_urease_candidates.py \\
+        --strain ${strain} \\
+        --bakta-json ${json_file} \\
+        --blast-tsv ${strain}_blast.tsv \\
+        --hmmer-tbl ${strain}_hmmer.tbl \\
         --out-tsv ${strain}_candidates.tsv
     """
 }
@@ -195,10 +219,10 @@ process MERGE_ALL_STRAINS {
     script:
     """
     mkdir -p input_tsvs
-    cp ${candidate_tsvs} input_tsvs/ || true
-    python3 ${projectDir}/bin/merge_strain_results.py \
-        --candidates-dir input_tsvs \
-        --out-matrix urease_presence_absence.tsv \
+    cp ${candidate_tsvs} input_tsvs/
+    python3 ${projectDir}/bin/merge_strain_results.py \\
+        --candidates-dir input_tsvs \\
+        --out-matrix urease_presence_absence.tsv \\
         --out-summary summary_unified.tsv
     """
 }
@@ -216,9 +240,9 @@ process ANALYZE_SYNTENY {
     script:
     """
     mkdir -p gbk_inputs
-    cp ${gbff_files} gbk_inputs/ || true
-    python3 ${projectDir}/bin/synteny_analysis.py \
-        --gbk-dir gbk_inputs \
+    cp ${gbff_files} gbk_inputs/
+    python3 ${projectDir}/bin/synteny_analysis.py \\
+        --gbk-dir gbk_inputs \\
         --out-dir .
     """
 }
@@ -232,21 +256,50 @@ process BUILD_PHYLOGENY {
     path faa_files
 
     output:
-    path "ureC*" optional true
+    // PT-BR: O status é sempre emitido; a árvore é opcional porque "menos de 3 UreC"
+    //        é um resultado biológico legítimo, não uma falha — e nesse caso nenhuma
+    //        árvore é inventada.
+    // EN-US: The status is always emitted; the tree is optional because "fewer than 3
+    //        UreC" is a legitimate biological outcome, not a failure — and in that case
+    //        no tree is invented.
+    path "phylogeny_status.txt"
+    path "ureC*", optional: true
 
     script:
     """
     cat ${faa_files} > all_proteins.faa
-    python3 ${projectDir}/bin/build_phylogeny.py \
-        --fasta-in all_proteins.faa \
+    python3 ${projectDir}/bin/build_phylogeny.py \\
+        --fasta-in all_proteins.faa \\
+        --candidates-dir . \\
         --out-dir .
     """
 }
 
 workflow {
+    // PT-BR: log.info precisa ficar dentro do workflow — o parser estrito do
+    //        Nextflow rejeita instruções no nível superior do script.
+    // EN-US: log.info must live inside the workflow — Nextflow's strict parser
+    //        rejects statements at the script's top level.
+    log.info """
+========================================================================================
+ BAAFES-UREASE-MINING PIPELINE
+========================================================================================
+ Accessions File  : ${params.accessions}
+ References FASTA : ${params.references}
+ Pfam HMM File    : ${params.pfam_hmm}
+ Bakta DB Path    : ${params.bakta_db}
+ CheckM2 DB Path  : ${params.checkm2_db}
+ Output Directory : ${params.outdir}
+========================================================================================
+"""
+
     accessions_ch = Channel.fromPath(params.accessions)
         .splitCsv(header: true, sep: '\t')
         .map { row -> tuple(row.strain, row.species, row.genbank_accession) }
+
+    // PT-BR: O Pfam e seus índices do hmmpress precisam ser encenados juntos.
+    // EN-US: Pfam and its hmmpress indices must be staged together.
+    pfam_ch = Channel.fromPath("${params.pfam_hmm}*").collect()
 
     PREFLIGHT_CHECK(file(params.accessions), file(params.references))
 
@@ -255,16 +308,16 @@ workflow {
     QC_CHECKM2(DOWNLOAD_GENOME.out.genome_fasta)
 
     BAKTA_ANNOTATE(DOWNLOAD_GENOME.out.genome_fasta)
-    
+
     EXTRACT_CANDIDATES(
         BAKTA_ANNOTATE.out.bakta_results,
         file(params.references),
-        file(params.pfam_hmm)
+        pfam_ch
     )
 
-    all_candidates = EXTRACT_CANDIDATES.out.candidates_tsv.map { strain, tsv -> tsv }.collect()
+    all_candidates = EXTRACT_CANDIDATES.out.candidates_tsv.map { _strain, tsv -> tsv }.collect()
     all_gbffs = EXTRACT_CANDIDATES.out.gbff_out.collect()
-    all_faas = BAKTA_ANNOTATE.out.bakta_results.map { strain, gff, faa, json, gbff -> faa }.collect()
+    all_faas = BAKTA_ANNOTATE.out.bakta_results.map { _strain, _gff, faa, _json, _gbff -> faa }.collect()
 
     MERGE_ALL_STRAINS(all_candidates)
     ANALYZE_SYNTENY(all_gbffs)

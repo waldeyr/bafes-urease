@@ -1,0 +1,12 @@
+# ==============================================================================
+# PT-BR: Ambiente isolado do QUAST. Ele fixa versões exatas de BLAST e python_abi,
+#        o que conflita com o ambiente principal. Ver comentário em environment.yml.
+# EN-US: Isolated QUAST environment. It pins exact BLAST and python_abi versions,
+#        which conflicts with the main environment. See the note in environment.yml.
+# ==============================================================================
+name: quast
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - quast

@@ -1,0 +1,30 @@
+# ==============================================================================
+# PT-BR: Artefatos gerados pelo pipeline — nenhum deles deve ir para o Git.
+# EN-US: Pipeline-generated artifacts — none of these belong in Git.
+# ==============================================================================
+
+# Bancos de dados baixados / Downloaded databases
+Pfam-A.hmm
+Pfam-A.hmm.gz
+db/
+
+# Saídas e trabalho do Nextflow / Nextflow outputs and work directory
+results/
+work/
+.nextflow/
+.nextflow.log*
+.nfhome/
+.logs/
+
+# Nextflow instalado pelo bootstrap / Nextflow installed by bootstrap
+bin/nextflow
+
+# Segredos: NCBI_API_KEY etc. / Secrets: NCBI_API_KEY etc. (ver / see .env.example)
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Sistema operacional / OS
+.DS_Store

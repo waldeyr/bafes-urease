@@ -39,8 +39,17 @@ flowchart TD
 ## 3. Quick-Start
 
 ### Prerequisites
-- Docker Engine >= 24.0 (or Conda/Mamba for local execution)
-- Git & Bash
+
+The whole pipeline runs **inside the `bafes_urease` container**. The host only needs:
+
+- Docker Engine >= 24.0 (with your user in the `docker` group)
+- Git, Bash, and `curl`
+- Disk space: **~160 GB free** for the full Bakta database (use `--bakta-db-type light` for ~10 GB,
+  or `--skip-bakta-db` if you already have one)
+
+Nextflow, Bakta, BLAST+, HMMER, MAFFT, trimAl, IQ-TREE, QUAST, and clinker all ship inside the
+image — none of them need to be installed on the host. To run without Docker (with a preconfigured
+Conda/Mamba environment), use `--runtime local`.
 
 ### Step-by-Step Execution Command Sequence
 
@@ -52,15 +61,70 @@ cd bafes-urease
 # 2. Make the wrapper script executable
 chmod +x run.sh
 
-# 3. Step A — Bootstrap (prepares directories, templates, and pre-downloads)
+# 3. Step A — Bootstrap: builds the image, downloads Pfam and the full Bakta database.
+#    First run takes hours (image build ~20 min + Bakta full DB ~75 GB). Idempotent:
+#    every completed step is skipped on subsequent runs.
 ./run.sh --bootstrap --runtime docker --container-image bafes_urease
 
-# 4. Step B — Build & Pre-flight Check (validates environment & runs dry-run resource checks)
+# 4. Step B — Build & Pre-flight Check (validates environment & resource reachability)
 ./run.sh --build --runtime docker --container-image bafes_urease
 
 # 5. Step C — Pipeline Execution with real-time tqdm progress tracking & detailed logging
 ./run.sh --exec --runtime docker --container-image bafes_urease --verbose
 ```
+
+### Useful Bootstrap Options
+
+| Option | Effect |
+| :--- | :--- |
+| `--force-rebuild` | Rebuilds the Docker image even if it already exists |
+| `--bakta-db-type light` | Downloads the reduced Bakta database (~10 GB instead of ~75 GB) |
+| `--skip-bakta-db` | Skips the Bakta database download (use if you already have one at `--bakta-db`) |
+| `--runtime local` | Runs on the host without a container (requires a preconfigured Conda/Mamba env) |
+
+### Configuration via `.env`
+
+Copy the template and fill it in. `run.sh` loads `.env` automatically and forwards the
+variables into the container. `.env` is in `.gitignore` — **never commit your key**.
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Effect |
+| :--- | :--- |
+| `NCBI_API_KEY` | Raises the E-utilities rate limit from 3 to 10 req/s. **Recommended**: without it the 10-accession pre-check and the genome downloads are throttled to 3 req/s and are more prone to HTTP 429. Generate one at [account.ncbi.nlm.nih.gov](https://account.ncbi.nlm.nih.gov/) → Account Settings → API Key Management |
+| `NCBI_EMAIL` | Contact e-mail required by the NCBI E-utilities policy |
+| `BAFES_INSECURE_SSL=1` | Disables TLS verification (only for networks behind a TLS-intercepting proxy) |
+
+---
+
+## Data Integrity
+
+The pipeline **never fabricates data**. Any step that cannot produce a real result from the
+NCBI genomes fails explicitly (exit != 0) instead of substituting a plausible-looking value:
+
+- **Genomes.** The study's accessions are WGS master records (e.g. `VKHW00000000.1`), which
+  carry no sequence — an `efetch` on them returns zero bytes.
+  [download_genome.py](bin/download_genome.py) resolves the accession to its assembly
+  (`GCA_`/`GCF_`) before downloading, then validates contigs, base count (>= 500 kb), and the
+  nucleotide alphabet. Without a real genome, the strain does not continue.
+- **QC.** CheckM2 actually runs against its database. There are no hardcoded
+  completeness/contamination values.
+- **Annotation.** Without the Bakta database, `BAKTA_ANNOTATE` fails. There is no substitute
+  annotation with invented genes.
+- **References.** The 22 sequences in [urease_references.fasta](data/urease_references.fasta)
+  are downloaded from UniProt using accessions pinned in
+  [urease_reference_accessions.tsv](data/urease_reference_accessions.tsv), with each sequence's
+  length verified against its expected value. Regenerate with `python3 bin/fetch_references.py`.
+- **Synteny and phylogeny.** No placeholder HTML and no partial trees. With fewer than 3 UreC
+  sequences, that is recorded in `phylogeny_status.txt` as a legitimate outcome — no tree is
+  possible — and no tree file is written.
+
+Curated reference set: *Sporosarcina pasteurii* (ureA–G, complete reviewed operon),
+*Bacillus subtilis* 168 (ureA–C), *Bacillus* sp. TB-90 (ureD–H), *Prochlorococcus marinus*
+MED4 (urtA–E), *Oleomonas sagaranensis* (urea carboxylase), *Pseudomonas* sp. ADP
+(allophanate hydrolase AtzF).
 
 ---
 

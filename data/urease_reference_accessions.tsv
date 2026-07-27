@@ -1,0 +1,29 @@
+target_gene	uniprot_accession	expected_length	status	organism	note
+# PT-BR: Accessions UniProt reais e fixadas que compoem as referencias curadas.
+# EN-US: Real, pinned UniProt accessions that make up the curated reference set.
+# PT-BR: Regenere o FASTA com / EN-US: Regenerate the FASTA with:
+#        python3 bin/fetch_references.py --accessions data/urease_reference_accessions.tsv --out data/urease_references.fasta
+# PT-BR: expected_length e verificado no download; divergencia aborta a geracao.
+# EN-US: expected_length is verified on download; a mismatch aborts generation.
+ureA	P41022	100	reviewed	Sporosarcina pasteurii	Urease subunit gamma; modelo ureolitico de referencia / reference ureolytic model
+ureB	P41021	126	reviewed	Sporosarcina pasteurii	Urease subunit beta
+ureC	P41020	570	reviewed	Sporosarcina pasteurii	Urease subunit alpha; EC 3.5.1.5
+ureD	Q45347	257	reviewed	Sporosarcina pasteurii	Urease accessory protein UreD
+ureE	P50049	147	reviewed	Sporosarcina pasteurii	Urease accessory protein UreE
+ureF	Q45345	202	reviewed	Sporosarcina pasteurii	Urease accessory protein UreF
+ureG	Q9RP19	211	reviewed	Sporosarcina pasteurii	Urease accessory protein UreG
+ureA	P75030	105	reviewed	Bacillus subtilis 168	Urease subunit gamma
+ureB	P71035	124	reviewed	Bacillus subtilis 168	Urease subunit beta
+ureC	P77837	569	reviewed	Bacillus subtilis 168	Urease subunit alpha; EC 3.5.1.5
+ureD	Q07400	271	reviewed	Bacillus sp. TB-90	Urease accessory protein UreD
+ureE	Q07401	148	reviewed	Bacillus sp. TB-90	Urease accessory protein UreE
+ureF	Q07402	227	reviewed	Bacillus sp. TB-90	Urease accessory protein UreF
+ureG	Q07403	204	reviewed	Bacillus sp. TB-90	Urease accessory protein UreG
+ureH	Q07404	228	reviewed	Bacillus sp. TB-90	Urease accessory protein UreH (homologo de UreD em Bacillota)
+urtA	Q7V1A9	439	unreviewed	Prochlorococcus marinus MED4	Urea ABC transporter substrate-binding; operon PMM0970-0974
+urtB	Q7V1A8	384	unreviewed	Prochlorococcus marinus MED4	Urea ABC transporter permease
+urtC	Q7V1A7	378	unreviewed	Prochlorococcus marinus MED4	Urea ABC transporter permease
+urtD	Q7V1A6	251	unreviewed	Prochlorococcus marinus MED4	Urea ABC transporter ATP-binding
+urtE	Q7V1A5	236	unreviewed	Prochlorococcus marinus MED4	Urea ABC transporter ATP-binding
+uc	Q75RY4	1171	unreviewed	Oleomonas sagaranensis	Urea carboxylase; EC 6.3.4.6; UC bacteriana caracterizada / characterized bacterial UC
+ah	Q936X2	605	reviewed	Pseudomonas sp. ADP	Allophanate hydrolase AtzF; EC 3.5.1.54

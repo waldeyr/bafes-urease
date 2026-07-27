@@ -1,28 +1,41 @@
-name: urease-mining
+# ==============================================================================
+# PT-BR: Ambiente principal do pipeline.
+# EN-US: Main pipeline environment.
+#
+# PT-BR: QUAST e CheckM2 NÃO entram aqui: o QUAST fixa versões exatas de BLAST e
+#        de python_abi, e o CheckM2 exige Python 3.12 — as três restrições são
+#        mutuamente incompatíveis num único ambiente. Eles são instalados em
+#        ambientes isolados pelo Dockerfile (env-quast.yml / env-checkm2.yml) e
+#        expostos no PATH. Ver Dockerfile.
+# EN-US: QUAST and CheckM2 are NOT here: QUAST pins exact BLAST and python_abi
+#        versions and CheckM2 requires Python 3.12 — the three constraints cannot
+#        coexist in one environment. They are installed into isolated environments
+#        by the Dockerfile (env-quast.yml / env-checkm2.yml) and exposed on PATH.
+#        See Dockerfile.
+# ==============================================================================
+name: base
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
   - python=3.11
   - openjdk=17
   - nextflow>=24.04
   - bakta>=1.9.0
-  - checkm2
-  - quast
   - blast>=2.14.0
   - hmmer>=3.3.2
   - mafft>=7.520
   - trimal>=1.4.1
   - iqtree>=2.2.0
-  - clinker
+  - clinker-py
   - pandas
   - tqdm
   - biopython
   - requests
+  # PT-BR: Pacote conda; não existe no PyPI com esse nome. Fornece o binário `datasets`.
+  # EN-US: Conda package; it does not exist on PyPI under this name. Provides the `datasets` binary.
+  - ncbi-datasets-cli
   - curl
   - tar
   - gzip
   - pip
-  - pip:
-    - ncbi-datasets-cli
