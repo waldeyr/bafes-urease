@@ -15,8 +15,10 @@ VERBOSE=false
 RESUME=false
 FORCE_REBUILD=false
 SKIP_BAKTA_DB=false
+NO_SCREEN=false
+WAIT_FOR_SESSION=false
 RUNTIME="docker"
-CONTAINER_IMAGE="bafes_urease"
+CONTAINER_IMAGE="bafes-urease"
 BAKTA_DB_TYPE="full"
 ACCESSIONS="data/accessions.tsv"
 REFERENCES="data/urease_references.fasta"
@@ -50,7 +52,11 @@ usage() {
     echo ""
     echo "Opções / Options:"
     echo "  --runtime RUNTIME               Motor: docker | singularity | local (default: docker)"
-    echo "  --container-image IMAGE         Imagem container / Container image tag (default: bafes_urease)"
+    echo "  --container-image IMAGE         Imagem container / Container image tag (default: bafes-urease)"
+    echo "  --no-screen                     Executa em primeiro plano, sem criar sessão screen"
+    echo "                                  Runs in the foreground, without creating a screen session"
+    echo "  --wait                          Aguarda a sessão terminar e propaga o código de saída real"
+    echo "                                  Waits for the session to finish and propagates the real exit code"
     echo "  --force-rebuild                 Reconstrói a imagem mesmo se existir / Rebuilds image even if present"
     echo "  --bakta-db-type TYPE            Banco Bakta: full | light (default: full)"
     echo "  --skip-bakta-db                 Não baixa o banco Bakta / Skips Bakta DB download"
@@ -69,6 +75,14 @@ usage() {
     exit 0
 }
 
+# PT-BR: Guarda os argumentos originais ANTES do parsing — o laço abaixo os consome
+#        com 'shift', e tanto a reexecução via 'sg docker' quanto a criação da sessão
+#        screen precisam repassar a linha de comando intacta ao processo interno.
+# EN-US: Save the original arguments BEFORE parsing — the loop below consumes them with
+#        'shift', and both the 'sg docker' re-execution and the screen session need to
+#        forward the untouched command line to the inner process.
+ORIGINAL_ARGS=("$@")
+
 # PT-BR: Parse de opções / EN-US: Parse command-line flags
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -79,6 +93,8 @@ while [[ $# -gt 0 ]]; do
         --resume) RESUME=true; shift ;;
         --force-rebuild) FORCE_REBUILD=true; shift ;;
         --skip-bakta-db) SKIP_BAKTA_DB=true; shift ;;
+        --no-screen) NO_SCREEN=true; shift ;;
+        --wait) WAIT_FOR_SESSION=true; shift ;;
         --runtime) RUNTIME="$2"; shift 2 ;;
         --container-image) CONTAINER_IMAGE="$2"; shift 2 ;;
         --bakta-db-type) BAKTA_DB_TYPE="$2"; shift 2 ;;
@@ -106,6 +122,123 @@ case "$BAKTA_DB_TYPE" in
     *) echo "[ERRO/ERROR] --bakta-db-type inválido / invalid: $BAKTA_DB_TYPE (full | light)"; exit 2 ;;
 esac
 
+# ==============================================================================
+# PT-BR: Credencial de grupo defasada.
+#        Os grupos suplementares de um processo são fixados no login por setgroups()
+#        e nunca são relidos de /etc/group. Uma sessão screen/tmux iniciada ANTES do
+#        'usermod -aG docker' carrega o conjunto antigo, e todo shell criado dentro
+#        dela herda a defasagem — inclusive um screen novo criado a partir dela.
+#        O 'sg' relê /etc/group, então reexecutar por ele corrige a sessão velha.
+# EN-US: Stale group credential.
+#        A process's supplementary groups are fixed at login by setgroups() and are
+#        never re-read from /etc/group. A screen/tmux session started BEFORE
+#        'usermod -aG docker' carries the old set, and every shell created inside it
+#        inherits that staleness — including a new screen spawned from it.
+#        'sg' re-reads /etc/group, so re-executing through it repairs the old session.
+# ==============================================================================
+if [ "$RUNTIME" = "docker" ] && [ -z "${BAFES_SG_RETRIED:-}" ] \
+   && ! id -nG | tr ' ' '\n' | grep -qx docker \
+   && getent group docker 2>/dev/null | cut -d: -f4 | tr ',' '\n' | grep -qx "$USER"; then
+    echo ">>> Credencial de grupo defasada nesta sessão / Stale group credential in this session."
+    echo "    Esta sessão é anterior ao 'usermod -aG docker'; reexecutando via 'sg docker'."
+    echo "    This session predates 'usermod -aG docker'; re-executing through 'sg docker'."
+    export BAFES_SG_RETRIED=1
+    # PT-BR: Sob 'sg docker' o GID primário vira o do grupo docker. Preservamos o GID
+    #        original para que os artefatos não saiam com grupo 'docker'.
+    # EN-US: Under 'sg docker' the primary GID becomes docker's. We preserve the original
+    #        GID so artifacts do not end up group-owned by 'docker'.
+    export BAFES_HOST_GID="$(id -g)"
+    exec sg docker -c "$(printf '%q ' "$0" "${ORIGINAL_ARGS[@]}")"
+fi
+
+# ==============================================================================
+# PT-BR: Sessão screen — protege execuções longas contra queda do SSH.
+#        O --bootstrap leva horas (imagem + Bakta full + CheckM2) e o --exec mais ainda.
+# EN-US: Screen session — protects long runs against SSH disconnection.
+#        --bootstrap takes hours (image + full Bakta + CheckM2) and --exec even longer.
+# ==============================================================================
+session_alive() {
+    case "${1:-}" in
+        tmux)   tmux has-session -t "$SESSION" 2>/dev/null ;;
+        *)      screen -ls 2>/dev/null | grep -qE "[0-9]+\.${SESSION}[[:space:]]" ;;
+    esac
+}
+
+if [ -z "${BAFES_IN_SCREEN:-}" ] && [ "$NO_SCREEN" = false ]; then
+    PHASES=""
+    [ "$BOOTSTRAP" = true ] && PHASES="${PHASES}bootstrap-"
+    [ "$BUILD" = true ]     && PHASES="${PHASES}build-"
+    [ "$EXEC" = true ]      && PHASES="${PHASES}exec-"
+    PHASES="${PHASES%-}"
+
+    SESSION="bafes-${PHASES}"
+    mkdir -p .logs
+    STAMP="$(date +%Y%m%d-%H%M%S)"
+    LOGFILE=".logs/${PHASES}-${STAMP}.log"
+    EXITFILE=".logs/${PHASES}-${STAMP}.exitcode"
+
+    BACKEND=""
+    if command -v screen >/dev/null 2>&1; then
+        BACKEND="screen"
+    elif command -v tmux >/dev/null 2>&1; then
+        BACKEND="tmux"
+    fi
+
+    if [ -n "$BACKEND" ]; then
+        if session_alive "$BACKEND"; then
+            echo "[ERRO/ERROR] Já existe uma sessão ativa / A session is already running: $SESSION"
+            echo "             Reanexar / Attach:  $BACKEND $([ "$BACKEND" = tmux ] && echo "attach -t" || echo "-r") $SESSION"
+            echo "             Encerrar / Kill:    $([ "$BACKEND" = tmux ] && echo "tmux kill-session -t $SESSION" || echo "screen -S $SESSION -X quit")"
+            exit 8
+        fi
+
+        # PT-BR: tee mantém a saída visível ao reanexar E grava o log; PIPESTATUS
+        #        recupera o código real do run.sh, não o do tee.
+        # EN-US: tee keeps output visible on attach AND writes the log; PIPESTATUS
+        #        recovers run.sh's real exit code, not tee's.
+        WRAPPER='BAFES_IN_SCREEN=1 "$@" 2>&1 | tee '"$(printf '%q' "$LOGFILE")"'
+code=${PIPESTATUS[0]}
+echo "$code" > '"$(printf '%q' "$EXITFILE")"'
+exit "$code"'
+
+        if [ "$BACKEND" = "tmux" ]; then
+            tmux new-session -d -s "$SESSION" bash -c "$WRAPPER" bash "$0" "${ORIGINAL_ARGS[@]}"
+            ATTACH="tmux attach -t $SESSION"
+        else
+            screen -dmS "$SESSION" bash -c "$WRAPPER" bash "$0" "${ORIGINAL_ARGS[@]}"
+            ATTACH="screen -r $SESSION"
+        fi
+
+        echo "================================================================="
+        echo "   BAAFES UREASE MINING — SESSÃO INICIADA / SESSION STARTED      "
+        echo "================================================================="
+        echo ">>> Sessão / Session : $SESSION ($BACKEND)"
+        echo ">>> Reanexar / Attach: $ATTACH        (solte com / detach with Ctrl-A D)"
+        echo ">>> Log              : $LOGFILE"
+        echo ">>> Código de saída  : $EXITFILE"
+
+        if [ "$WAIT_FOR_SESSION" = true ]; then
+            echo ">>> Aguardando a sessão terminar / Waiting for the session to finish..."
+            while session_alive "$BACKEND"; do sleep 5; done
+            REAL_CODE="$(cat "$EXITFILE" 2>/dev/null || echo 1)"
+            echo ">>> Sessão concluída / Session finished (exit=$REAL_CODE)."
+            exit "$REAL_CODE"
+        fi
+
+        echo ""
+        echo "[ATENÇÃO/NOTE] Este comando retorna 0 porque a execução seguiu em segundo plano."
+        echo "               O código de saída REAL fica em $EXITFILE ao final."
+        echo "               This command returns 0 because the run continues in the background."
+        echo "               The REAL exit code lands in $EXITFILE when it completes."
+        echo "               Use --wait para bloquear e propagar o código / to block and propagate it."
+        exit 0
+    fi
+
+    echo "[AVISO/WARNING] Nem 'screen' nem 'tmux' encontrados / Neither 'screen' nor 'tmux' found."
+    echo "                Executando em primeiro plano; a queda do SSH interrompe a execução."
+    echo "                Running in the foreground; an SSH drop will kill the run."
+fi
+
 mkdir -p data db results .logs .nfhome
 
 echo "================================================================="
@@ -131,8 +264,14 @@ check_docker() {
 
     echo "[ERRO/ERROR] Não foi possível falar com o daemon Docker / Cannot reach the Docker daemon."
     if echo "$err" | grep -qi "permission denied"; then
+        # PT-BR: A defasagem de credencial já foi tratada antes; se chegamos aqui, o
+        #        usuário realmente não pertence ao grupo docker.
+        # EN-US: The stale-credential case was already handled earlier; reaching here
+        #        means the user genuinely does not belong to the docker group.
         echo "             Causa provável / Likely cause: usuário sem acesso ao socket / user lacks socket access."
-        echo "             Solução / Fix: sudo usermod -aG docker \$USER && newgrp docker"
+        echo "             O admin precisa executar / The admin must run:"
+        echo "                 sudo usermod -aG docker $USER"
+        echo "             Depois, abra uma sessão SSH nova / Then open a new SSH session."
     else
         echo "             Causa provável / Likely cause: daemon parado / daemon not running."
         echo "             Solução / Fix: sudo systemctl start docker"
@@ -149,10 +288,16 @@ in_container() {
         return $?
     fi
 
+    # PT-BR: BAFES_HOST_GID preserva o GID original quando reexecutamos via 'sg docker',
+    #        que troca o GID primário do processo. Sem isso os artefatos em results/,
+    #        db/ e work/ sairiam com grupo 'docker'.
+    # EN-US: BAFES_HOST_GID preserves the original GID when we re-execute through
+    #        'sg docker', which swaps the process's primary GID. Without it, artifacts in
+    #        results/, db/ and work/ would end up group-owned by 'docker'.
     docker run --rm \
         -v "$PWD":/workspace \
         -w /workspace \
-        -u "$(id -u):$(id -g)" \
+        -u "$(id -u):${BAFES_HOST_GID:-$(id -g)}" \
         -e HOME=/workspace/.nfhome \
         -e NXF_HOME=/workspace/.nfhome \
         -e NCBI_API_KEY="${NCBI_API_KEY:-}" \

@@ -40,7 +40,7 @@ flowchart TD
 
 ### Prerequisites
 
-The whole pipeline runs **inside the `bafes_urease` container**. The host only needs:
+The whole pipeline runs **inside the `bafes-urease` container**. The host only needs:
 
 - Docker Engine >= 24.0 (with your user in the `docker` group)
 - Git, Bash, and `curl`
@@ -64,16 +64,43 @@ chmod +x run.sh
 # 3. Step A — Bootstrap: builds the image, downloads Pfam and the full Bakta database.
 #    First run takes hours (image build ~20 min + Bakta full DB ~75 GB). Idempotent:
 #    every completed step is skipped on subsequent runs.
-./run.sh --bootstrap --runtime docker --container-image bafes_urease
+#    Upgrading from an install that used the old `bafes_urease` tag? Retag first to
+#    avoid a ~20-minute rebuild:
+#        docker tag bafes_urease bafes-urease && docker rmi bafes_urease
+./run.sh --bootstrap --runtime docker --container-image bafes-urease
 
 # 4. Step B — Build & Pre-flight Check (validates environment & resource reachability)
-./run.sh --build --runtime docker --container-image bafes_urease
+./run.sh --build --runtime docker --container-image bafes-urease
 
 # 5. Step C — Pipeline Execution with real-time tqdm progress tracking & detailed logging
-./run.sh --exec --runtime docker --container-image bafes_urease --verbose
+./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
-### Useful Bootstrap Options
+### Automatic `screen` Session
+
+Every `run.sh` invocation creates its own **detached** `screen` session and returns the prompt
+immediately, so an SSH drop does not kill the run — which matters because bootstrap takes hours
+and `--exec` takes longer still.
+
+```
+>>> Sessão / Session : bafes-bootstrap (screen)
+>>> Reanexar / Attach: screen -r bafes-bootstrap        (detach with Ctrl-A D)
+>>> Log              : .logs/bootstrap-20260727-1430.log
+>>> Código de saída  : .logs/bootstrap-20260727-1430.exitcode
+```
+
+**Mind the exit code.** Because the run continues in the background, the outer invocation returns
+`0` even when the pipeline fails. The real code is written to the `.exitcode` file. To chain
+commands or automate, use `--wait`, which blocks until completion and propagates the code:
+
+```bash
+./run.sh --build --runtime docker --wait && ./run.sh --exec --runtime docker --wait
+```
+
+If `screen` is unavailable, `run.sh` falls back to `tmux`; with neither, it runs in the foreground
+with a warning. A second invocation of the same phase is refused (exit 8) rather than duplicated.
+
+### Useful Options
 
 | Option | Effect |
 | :--- | :--- |
@@ -81,6 +108,19 @@ chmod +x run.sh
 | `--bakta-db-type light` | Downloads the reduced Bakta database (~10 GB instead of ~75 GB) |
 | `--skip-bakta-db` | Skips the Bakta database download (use if you already have one at `--bakta-db`) |
 | `--runtime local` | Runs on the host without a container (requires a preconfigured Conda/Mamba env) |
+| `--no-screen` | Runs in the foreground, without creating a session |
+| `--wait` | Blocks until the session finishes and propagates the real exit code |
+
+### Common Problem: `permission denied` on the Docker socket
+
+If the command works in a fresh terminal but fails inside an older `screen` session, Docker is not
+the cause. A process's supplementary groups are fixed at login by `setgroups()` and are never
+re-read from `/etc/group`; a session created **before** `usermod -aG docker` carries the old set,
+and every shell inside it inherits that staleness. `run.sh` detects this and re-executes through
+`sg docker`, which re-reads `/etc/group` — there is no need to kill the session.
+
+If it still fails, the user genuinely is not in the group. The admin must run
+`sudo usermod -aG docker $USER`, and you must open a new SSH session.
 
 ### Configuration via `.env`
 

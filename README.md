@@ -135,7 +135,7 @@ graph TD
     RunWrapper -->|4. Dispara com tqdm| ProgressTracker["progress_tracker.py"]
     RunWrapper -->|5. Executa Pipeline| NextflowEngine["Nextflow DSL2 Engine (main.nf)"]
     
-    subgraph Container_bafes_urease ["Container Docker: bafes_urease"]
+    subgraph Container_bafes_urease ["Container Docker: bafes-urease"]
         NextflowEngine --> P0["PREFLIGHT_CHECK"]
         P0 --> P1["DOWNLOAD_GENOME"]
         P1 --> P2["QC (QUAST & CheckM2)"]
@@ -235,7 +235,7 @@ substituir a saída por um valor plausível. Em particular:
 
 ### Pre-requisitos
 
-Todo o pipeline roda **dentro do container** `bafes_urease`. O host precisa apenas de:
+Todo o pipeline roda **dentro do container** `bafes-urease`. O host precisa apenas de:
 
 - Docker Engine >= 24.0 (com o usuário no grupo `docker`)
 - Git, Bash e `curl`
@@ -265,18 +265,45 @@ Execute a sequência de 3 passos recomendada:
 ```bash
 # Passo A: Bootstrap — constrói a imagem, baixa Pfam e o banco completo do Bakta
 #          Leva horas na primeira vez (imagem ~20 min + banco Bakta full ~75 GB).
-./run.sh --bootstrap --runtime docker --container-image bafes_urease
+#          Vindo de uma instalação com a tag antiga `bafes_urease`? Retagueie antes,
+#          para não reconstruir a imagem do zero:
+#              docker tag bafes_urease bafes-urease && docker rmi bafes_urease
+./run.sh --bootstrap --runtime docker --container-image bafes-urease
 
 # Passo B: Build e Pre-flight Check (validação de recursos e acessibilidade)
-./run.sh --build --runtime docker --container-image bafes_urease
+./run.sh --build --runtime docker --container-image bafes-urease
 
 # Passo C: Execução do pipeline com log detalhado e acompanhamento por tqdm
-./run.sh --exec --runtime docker --container-image bafes_urease --verbose
+./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
 O `--bootstrap` é idempotente: cada etapa concluída é pulada nas execuções seguintes.
 
-#### 4. Opções úteis do bootstrap
+#### 4. Sessão `screen` automática
+
+Toda invocação do `run.sh` cria a sua própria sessão `screen` **destacada** e devolve o prompt
+imediatamente, de modo que uma queda de SSH não interrompe a execução — relevante porque o
+bootstrap leva horas e o `--exec` mais ainda.
+
+```
+>>> Sessão / Session : bafes-bootstrap (screen)
+>>> Reanexar / Attach: screen -r bafes-bootstrap        (solte com Ctrl-A D)
+>>> Log              : .logs/bootstrap-20260727-1430.log
+>>> Código de saída  : .logs/bootstrap-20260727-1430.exitcode
+```
+
+**Atenção ao código de saída.** Como a execução segue em segundo plano, a invocação externa
+retorna `0` mesmo que o pipeline falhe. O código real é gravado no arquivo `.exitcode`. Para
+encadear comandos ou automatizar, use `--wait`, que bloqueia até o fim e propaga o código:
+
+```bash
+./run.sh --build --runtime docker --wait && ./run.sh --exec --runtime docker --wait
+```
+
+Se `screen` não existir, o `run.sh` tenta `tmux`; sem nenhum dos dois, executa em primeiro plano
+com um aviso. Uma segunda invocação da mesma fase é recusada (exit 8) em vez de duplicar a sessão.
+
+#### 5. Opções úteis
 
 | Opção | Efeito |
 | :--- | :--- |
@@ -284,8 +311,21 @@ O `--bootstrap` é idempotente: cada etapa concluída é pulada nas execuções 
 | `--bakta-db-type light` | Baixa o banco reduzido do Bakta (~10 GB em vez de ~75 GB) |
 | `--skip-bakta-db` | Não baixa o banco do Bakta (use se já tiver um em `--bakta-db`) |
 | `--runtime local` | Executa no host, sem container (exige Conda/Mamba já configurado) |
+| `--no-screen` | Executa em primeiro plano, sem criar sessão |
+| `--wait` | Bloqueia até a sessão terminar e propaga o código de saída real |
 
-#### 5. Configuração via `.env`
+#### 6. Problema comum: `permission denied` no socket do Docker
+
+Se o comando funciona num terminal novo mas falha dentro de uma sessão `screen` antiga, a causa
+não é o Docker. Os grupos suplementares de um processo são fixados no login por `setgroups()` e
+nunca são relidos de `/etc/group`; uma sessão criada **antes** do `usermod -aG docker` carrega o
+conjunto antigo, e todo shell dentro dela herda essa defasagem. O `run.sh` detecta essa situação
+e se reexecuta via `sg docker`, que relê `/etc/group` — não é preciso matar a sessão.
+
+Se ainda assim falhar, o usuário realmente não está no grupo. O admin precisa rodar
+`sudo usermod -aG docker $USER`, e você deve abrir uma sessão SSH nova.
+
+#### 7. Configuração via `.env`
 
 Copie o modelo e preencha. O `run.sh` carrega o `.env` automaticamente e repassa as
 variáveis para dentro do container. O `.env` está no `.gitignore` — **nunca versione sua chave**.
@@ -300,7 +340,7 @@ cp .env.example .env
 | `NCBI_EMAIL` | E-mail de contato exigido pela política do NCBI E-utilities |
 | `BAFES_INSECURE_SSL=1` | Desabilita a verificação TLS (só para redes com proxy TLS interceptador) |
 
-#### 6. Execução Direta via Nextflow (Opcional)
+#### 8. Execução Direta via Nextflow (Opcional)
 
 Requer Nextflow e as ferramentas no host, ou o perfil `docker` (um container por processo):
 
@@ -317,7 +357,7 @@ nextflow run main.nf \
 Os relatórios (`nf_report.html`, `nf_trace.txt`, `nf_timeline.html`, `nf_dag.html`) já vêm
 habilitados no `nextflow.config` — não é preciso passar as flags `-with-*`.
 
-#### 7. Estrutura de Saídas Geradas
+#### 9. Estrutura de Saídas Geradas
 ```
 results/
 ├── 00_preflight/    # Status dos testes de validação prévia
