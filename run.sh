@@ -13,6 +13,7 @@ BUILD=false
 EXEC=false
 VERBOSE=false
 RESUME=false
+RESUME_SESSION=""
 FORCE_REBUILD=false
 SKIP_BAKTA_DB=false
 UPDATE_DB=false
@@ -48,7 +49,11 @@ usage() {
     echo "  --build           Valida ambiente e recursos / Validates environment & resources"
     echo "  --exec            Executa o pipeline Nextflow / Runs the Nextflow pipeline"
     echo "  --verbose         Ativa relatórios e logs detalhados / Enables detailed reports & logs"
-    echo "  --resume          Retoma execução interrompida / Resumes interrupted execution"
+    echo "  --resume [ID]     Retoma execução interrompida; sem ID retoma a ÚLTIMA sessão do"
+    echo "                    .nextflow/history (um 'nextflow -preview' também conta e traz"
+    echo "                    cache vazio) / Resumes interrupted execution; with no ID it"
+    echo "                    resumes the LAST session in .nextflow/history (a"
+    echo "                    'nextflow -preview' counts too, and brings an empty cache)"
     echo ""
     echo "Opções / Options:"
     echo "  --runtime RUNTIME               Motor: docker | singularity | local (default: docker)"
@@ -92,7 +97,26 @@ while [[ $# -gt 0 ]]; do
         --build) BUILD=true; shift ;;
         --exec) EXEC=true; shift ;;
         --verbose) VERBOSE=true; shift ;;
-        --resume) RESUME=true; shift ;;
+        # PT-BR: --resume aceita um ID de sessão opcional. Sem ele o Nextflow retoma a
+        #        ÚLTIMA sessão do .nextflow/history — e um `nextflow run -preview` no mesmo
+        #        diretório também entra nesse histórico, com cache vazio. Quando isso
+        #        acontece, o `-resume` seguinte não reaproveita nada e o pipeline inteiro
+        #        (Bakta incluso) refaz do zero. Passe o ID explícito para retomar a sessão
+        #        que você realmente quer: ./run.sh --exec --resume <uuid>
+        # EN-US: --resume takes an optional session ID. Without it Nextflow resumes the LAST
+        #        session in .nextflow/history — and a `nextflow run -preview` in the same
+        #        directory also lands in that history, with an empty cache. When that
+        #        happens the next `-resume` reuses nothing and the whole pipeline (Bakta
+        #        included) reruns from scratch. Pass the explicit ID to resume the session
+        #        you actually want: ./run.sh --exec --resume <uuid>
+        --resume)
+            RESUME=true
+            shift
+            if [[ $# -gt 0 && "$1" != --* ]]; then
+                RESUME_SESSION="$1"
+                shift
+            fi
+            ;;
         --force-rebuild) FORCE_REBUILD=true; shift ;;
         --skip-bakta-db) SKIP_BAKTA_DB=true; shift ;;
         --update-db) UPDATE_DB=true; shift ;;
@@ -865,7 +889,18 @@ if [ "$EXEC" = true ]; then
     NF_FLAGS="-profile standard"
 
     if [ "$RESUME" = true ]; then
-        NF_FLAGS="$NF_FLAGS -resume"
+        if [ -n "$RESUME_SESSION" ]; then
+            NF_FLAGS="$NF_FLAGS -resume $RESUME_SESSION"
+            echo ">>> [EXEC] Retomando a sessão / Resuming session: $RESUME_SESSION"
+        else
+            NF_FLAGS="$NF_FLAGS -resume"
+            echo ">>> [EXEC] Retomando a ÚLTIMA sessão do histórico / Resuming the LAST session in the history."
+            echo "           Se um 'nextflow -preview' rodou depois da execução que você quer retomar,"
+            echo "           ele é a última sessão e o cache virá vazio. Confira com:"
+            echo "           / If a 'nextflow -preview' ran after the execution you want to resume, it IS"
+            echo "           the last session and the cache will come up empty. Check with:"
+            echo "               tail -5 .nextflow/history"
+        fi
     fi
 
     if [ "$VERBOSE" = true ]; then
