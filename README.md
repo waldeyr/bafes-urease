@@ -208,9 +208,9 @@ substituir a saída por um valor plausível. Em particular:
 - **Anotação.** Sem o banco do Bakta, [BAKTA_ANNOTATE](main.nf) falha. Não há anotação
   substituta com genes inventados.
 - **Referências.** As sequências de [urease_references.fasta](data/urease_references.fasta) são
-  baixadas do UniProt por uma consulta REST: proteínas de urease de bactérias
-  (`taxonomy_id:2`) revisadas (Swiss-Prot). Nada é sintetizado localmente — falha de rede,
-  resposta truncada ou conjunto vazio abortam sem escrever o FASTA. Regenere com:
+  baixadas do UniProt por uma consulta REST: proteínas de urease (`protein_name:urease`) de
+  Firmicutes (`taxonomy_id:1239`) revisadas (Swiss-Prot). Nada é sintetizado localmente — falha
+  de rede, resposta truncada ou conjunto vazio abortam sem escrever o FASTA. Regenere com:
   ```bash
   python3 bin/fetch_references.py
   ```
@@ -222,13 +222,13 @@ substituir a saída por um valor plausível. Em particular:
 
 | Item | Valor |
 | :--- | :--- |
-| Consulta | `(urease AND (taxonomy_id:2)) AND (reviewed:true)` |
+| Consulta | `(protein_name:urease) AND (taxonomy_id:1239) AND (reviewed:true)` |
 | Endpoint | `https://rest.uniprot.org/uniprotkb/stream` (FASTA comprimido) |
-| Escopo | Proteínas de urease de bactérias, revisadas (Swiss-Prot) |
+| Escopo | Proteínas de urease (por `protein_name`) de Firmicutes, revisadas (Swiss-Prot) |
 | Piso de sanidade | 100 sequências; abaixo disso a resposta é tratada como truncada e aborta |
 | Procedência | `data/urease_references.provenance.txt` — release, data, contagem e `sha256` |
 
-O conjunto é **vivo**: acompanha o UniProt e muda a cada release (na release 2026_02 são 3108
+O conjunto é **vivo**: acompanha o UniProt e muda a cada release (na release 2026_02 são 218
 sequências). A reprodutibilidade não vem de uma lista fixa de accessions, e sim do registro de
 procedência gravado ao lado do FASTA. Para fixar um recorte diferente, use `--query` ou `--url`:
 

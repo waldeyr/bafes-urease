@@ -190,18 +190,18 @@ NCBI genomes fails explicitly (exit != 0) instead of substituting a plausible-lo
 - **Annotation.** Without the Bakta database, `BAKTA_ANNOTATE` fails. There is no substitute
   annotation with invented genes.
 - **References.** The sequences in [urease_references.fasta](data/urease_references.fasta) are
-  downloaded from UniProt via a REST query: reviewed (Swiss-Prot) bacterial (`taxonomy_id:2`)
-  urease proteins. Nothing is synthesised locally — a network failure, a truncated response or
-  an empty result set aborts without writing the FASTA. Regenerate with
+  downloaded from UniProt via a REST query: reviewed (Swiss-Prot) Firmicutes (`taxonomy_id:1239`)
+  urease proteins (`protein_name:urease`). Nothing is synthesised locally — a network failure, a
+  truncated response or an empty result set aborts without writing the FASTA. Regenerate with
   `python3 bin/fetch_references.py`.
 - **Synteny and phylogeny.** No placeholder HTML and no partial trees. With fewer than 3 UreC
   sequences, that is recorded in `phylogeny_status.txt` as a legitimate outcome — no tree is
   possible — and no tree file is written.
 
-Reference set — query `(urease AND (taxonomy_id:2)) AND (reviewed:true)` against
+Reference set — query `(protein_name:urease) AND (taxonomy_id:1239) AND (reviewed:true)` against
 `https://rest.uniprot.org/uniprotkb/stream`, with a sanity floor of 100 sequences (below that the
 response is treated as truncated and aborts). The set is **live**: it tracks UniProt and changes
-with every release (3108 sequences on release 2026_02). Reproducibility does not rest on a fixed
+with every release (218 sequences on release 2026_02). Reproducibility does not rest on a fixed
 accession list but on the provenance record written next to the FASTA
 (`data/urease_references.provenance.txt` — release, date, count and `sha256`). To pin a different
 slice, use `--query` or `--url`.

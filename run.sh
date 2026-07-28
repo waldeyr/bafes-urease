@@ -476,10 +476,10 @@ EOF
         echo "  [1/5] Accessions já presente / already present: $ACCESSIONS"
     fi
 
-    # PT-BR: As referências são BAIXADAS do UniProt por consulta REST (ureases bacterianas
+    # PT-BR: As referências são BAIXADAS do UniProt por consulta REST (ureases de Firmicutes
     #        revisadas). Nunca são escritas localmente: um stub inventado geraria evidência
     #        falsa de BLASTp e contaminaria toda a triagem de candidatos.
-    # EN-US: References are DOWNLOADED from UniProt via a REST query (reviewed bacterial
+    # EN-US: References are DOWNLOADED from UniProt via a REST query (reviewed Firmicutes
     #        ureases). They are never written locally: a made-up stub would generate false
     #        BLASTp evidence and contaminate the whole candidate screening.
     # PT-BR: A "versão" das referências é a release do UniProt gravada na procedência
@@ -711,7 +711,7 @@ EOF
         fi
         echo "        Baixando banco do CheckM2 (~3 GB) / Downloading CheckM2 database (~3 GB)..."
         mkdir -p "$CHECKM2_DB_DIR"
-        if ! in_container checkm2 database --download --path "$CHECKM2_DB_DIR"; then
+        if ! in_container checkm2 database --download --path "$CHECKM2_DB_DIR" --no_write_json_db; then
             echo "  [ERRO/ERROR] Falha ao baixar o banco do CheckM2 / Failed to download the CheckM2 database."
             if [ -n "$CHECKM2_OLD" ] && [ -d "$CHECKM2_OLD" ]; then
                 echo "        Restaurando o banco anterior / Restoring the previous database: $CHECKM2_OLD -> $CHECKM2_DB_DIR"

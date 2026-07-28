@@ -2,9 +2,11 @@
 """
 fetch_references.py
 PT-BR: Baixa do UniProt as sequencias de referencia de urease definidas por uma consulta
-       REST: proteinas de bacterias (taxonomy_id:2) revisadas (Swiss-Prot) associadas a urease.
+       REST: proteinas de Firmicutes (taxonomy_id:1239) revisadas (Swiss-Prot) cujo nome
+       de proteina (protein_name) e urease.
 EN-US: Downloads the urease reference sequences from UniProt as defined by a REST query:
-       bacterial proteins (taxonomy_id:2), reviewed (Swiss-Prot), associated with urease.
+       Firmicutes proteins (taxonomy_id:1239), reviewed (Swiss-Prot), whose protein_name
+       is urease.
 
 PT-BR: Toda sequencia vem do endpoint /stream do UniProt. Nada e sintetizado localmente:
        falha de rede, resposta truncada ou conjunto vazio abortam sem escrever o FASTA.
@@ -25,11 +27,11 @@ import urllib.error
 
 # PT-BR: Consulta oficial das referencias de urease deste estudo.
 # EN-US: Official urease reference query for this study.
-UNIPROT_QUERY = "(urease AND (taxonomy_id:2)) AND (reviewed:true)"
+UNIPROT_QUERY = "(protein_name:urease) AND (taxonomy_id:1239) AND (reviewed:true)"
 UNIPROT_STREAM_URL = (
     "https://rest.uniprot.org/uniprotkb/stream"
     "?compressed=true&format=fasta"
-    "&query=%28urease+AND+%28taxonomy_id%3A2%29%29+AND+%28reviewed%3Atrue%29"
+    "&query=%28protein_name%3Aurease%29+AND+%28taxonomy_id%3A1239%29+AND+%28reviewed%3Atrue%29"
 )
 USER_AGENT = "bafes-urease-mining/0.4 (https://github.com/cbafes-unb/bafes-urease)"
 
@@ -169,7 +171,7 @@ def write_provenance(path, url, headers, n_seqs, fasta_path, digest):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fetch urease reference sequences from UniProt (reviewed, Bacteria)")
+        description="Fetch urease reference sequences from UniProt (reviewed, Firmicutes)")
     parser.add_argument("--url", default=None,
                         help="URL completa do endpoint /stream / Full /stream endpoint URL")
     parser.add_argument("--query", default=None,
