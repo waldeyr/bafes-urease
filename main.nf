@@ -276,6 +276,17 @@ process BUILD_PHYLOGENY {
 }
 
 workflow {
+    // PT-BR: bakta_db/checkm2_db são interpolados como texto bruto dentro do script
+    //        de cada processo — sem canonizar para caminho absoluto aqui, um valor
+    //        relativo como "db/db" nunca seria encontrado, pois cada task roda a
+    //        partir do seu próprio work dir, não da raiz do projeto.
+    // EN-US: bakta_db/checkm2_db are interpolated as raw text inside each process's
+    //        script — without canonicalizing to an absolute path here, a relative
+    //        value like "db/db" would never be found, since each task runs from its
+    //        own work dir, not the project root.
+    params.bakta_db   = file(params.bakta_db).toAbsolutePath().toString()
+    params.checkm2_db = file(params.checkm2_db).toAbsolutePath().toString()
+
     // PT-BR: log.info precisa ficar dentro do workflow — o parser estrito do
     //        Nextflow rejeita instruções no nível superior do script.
     // EN-US: log.info must live inside the workflow — Nextflow's strict parser
