@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# run.sh — Single Entry Point Wrapper for Baafes-urease-mining Pipeline
+# run.sh — Single Entry Point Wrapper for BAFES-urease-mining Pipeline
 # PT-BR: Wrapper de execução unificado. Todo o pipeline roda DENTRO do container.
 # EN-US: Unified execution wrapper. The whole pipeline runs INSIDE the container.
 # ==============================================================================
@@ -237,7 +237,7 @@ exit "$code"'
         fi
 
         echo "================================================================="
-        echo "   BAAFES UREASE MINING — SESSÃO INICIADA / SESSION STARTED      "
+        echo "   BAFES UREASE MINING — SESSÃO INICIADA / SESSION STARTED      "
         echo "================================================================="
         echo ">>> Sessão / Session : $SESSION ($BACKEND)"
         echo ">>> Reanexar / Attach: $ATTACH        (solte com / detach with Ctrl-A D)"
@@ -269,7 +269,7 @@ fi
 mkdir -p data db results .logs .nfhome
 
 echo "================================================================="
-echo "   BAAFES UREASE MINING — PIPELINE WRAPPER (run.sh)             "
+echo "   BAFES UREASE MINING — PIPELINE WRAPPER (run.sh)             "
 echo "================================================================="
 
 # ==============================================================================

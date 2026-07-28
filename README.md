@@ -1,4 +1,4 @@
-# Baafes-urease-mining
+# BAFES-urease-mining
 
 [![Language: Português](https://img.shields.io/badge/Idioma-Portugu%C3%AAs--BR-blue)](README.md)
 [![Language: English](https://img.shields.io/badge/Language-English--US-green)](README.en.md)
@@ -8,9 +8,9 @@
 ---
 
 ## Resumo do projeto
-O **Baafes-urease-mining** é um pipeline automatizado de bioinformática desenvolvido em Nextflow DSL2 e Python 3.11, containerizado via Docker, projetado para realizar a prospecção genômica, identificação funcional e análise evolutiva de genes envolvidos no catabolismo de ureia em genomas bacterianos. 
+O **BAFES-urease-mining** é um pipeline automatizado de bioinformática desenvolvido em Nextflow DSL2 e Python 3.11, containerizado via Docker, projetado para realizar a prospecção genômica, identificação funcional e análise evolutiva de genes envolvidos no catabolismo de ureia em genomas bacterianos. 
 
-O foco de aplicação abrange 10 genomas de bactérias aeróbias formadoras de endósporos (AEFB) da coleção CBafes/UnB isoladas de solos do Distrito Federal (acessos GenBank `VKHW00000000.1` a `VKIC00000000.1`). O sistema avalia simultaneamente três frentes metabólicas:
+O foco de aplicação abrange 10 genomas de **BAFES** (Bactérias Aeróbicas Formadoras de Endósporos) da coleção CBAFES/UnB isoladas de solos do Distrito Federal (acessos GenBank `VKHW00000000.1` a `VKIC00000000.1`). O sistema avalia simultaneamente três frentes metabólicas:
 1. **Via Canônica da Urease**: Subunidades catalíticas ($\gamma$ - UreA, $\beta$ - UreB, $\alpha$ - UreC) e proteínas acessórias de maturação (UreD, UreE, UreF, UreG).
 2. **Sistema de Transporte Ativo de Ureia**: Complexo ABC $urtABCDE$ (UrtA, UrtB, UrtC, UrtD, UrtE).
 3. **Rota Alternativa Independente de Níquel**: Urea carboxilase (`uc`) acoplada à alofanato hidrolase (`ah`).

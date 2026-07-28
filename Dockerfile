@@ -5,7 +5,7 @@
 #        broken builds on ARM hosts (Apple Silicon).
 FROM --platform=linux/amd64 mambaorg/micromamba:1.5.8-jammy
 
-LABEL maintainer="CBafes UnB Urease Mining Team"
+LABEL maintainer="CBAFES UnB Urease Mining Team"
 LABEL description="Container para pipeline Nextflow de mineracao de urease em genomas bacterianos"
 LABEL version="0.3"
 

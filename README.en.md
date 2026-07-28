@@ -1,4 +1,4 @@
-# Baafes-urease-mining
+# BAFES-urease-mining
 
 [![Language: Portuguese](https://img.shields.io/badge/Language-Portugu%C3%AAs--BR-blue)](README.md)
 [![Language: English](https://img.shields.io/badge/Language-English--US-green)](README.en.md)
@@ -9,9 +9,9 @@
 
 ## 1. General Project Description
 
-**Baafes-urease-mining** is an automated bioinformatics pipeline built in Nextflow DSL2 and Python 3.11, fully containerized via Docker. It is designed for genomic mining, functional identification, and evolutionary analysis of genes involved in urea catabolism across bacterial genomes.
+**BAFES-urease-mining** is an automated bioinformatics pipeline built in Nextflow DSL2 and Python 3.11, fully containerized via Docker. It is designed for genomic mining, functional identification, and evolutionary analysis of genes involved in urea catabolism across bacterial genomes.
 
-The primary target dataset comprises 10 endospore-forming aerobic bacterial (AEFB) genomes from the **CBafes/UnB collection** isolated from soils of Distrito Federal, Brazil (GenBank accessions `VKHW00000000.1` to `VKIC00000000.1`). The system simultaneously investigates three metabolic avenues:
+The primary target dataset comprises 10 aerobic endospore-forming bacteria (**BAFES**, from the Brazilian Portuguese *Bactérias Aeróbicas Formadoras de Endósporos*) genomes from the **CBAFES/UnB collection** isolated from soils of Distrito Federal, Brazil (GenBank accessions `VKHW00000000.1` to `VKIC00000000.1`). The system simultaneously investigates three metabolic avenues:
 
 1. **Canonical Urease Pathway**: Catalytic subunits ($\gamma$ - UreA, $\beta$ - UreB, $\alpha$ - UreC) and accessory maturation proteins (UreD, UreE, UreF, UreG).
 2. **Active Urea Transport System**: ABC transporter complex $urtABCDE$ (UrtA, UrtB, UrtC, UrtD, UrtE).

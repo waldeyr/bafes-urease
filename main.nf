@@ -4,7 +4,7 @@ nextflow.enable.dsl = 2
 
 /*
 ========================================================================================
-   BAAFES UREASE MINING PIPELINE (DSL2)
+   BAFES UREASE MINING PIPELINE (DSL2)
    PT-BR: Pipeline de mineração genômica de urease, transporte de ureia e via alternativa.
    EN-US: Genomic mining pipeline for urease, urea transport, and alternative pathways.
 
@@ -320,7 +320,7 @@ workflow {
     //        rejects statements at the script's top level.
     log.info """
 ========================================================================================
- BAAFES-UREASE-MINING PIPELINE
+ BAFES-UREASE-MINING PIPELINE
 ========================================================================================
  Accessions File  : ${params.accessions}
  References FASTA : ${params.references}
