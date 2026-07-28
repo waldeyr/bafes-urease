@@ -752,6 +752,8 @@ EOF
     fi
 
     echo "[BOOTSTRAP OK] Insumos iniciais preparados / Inputs ready."
+    echo "               Tudo pronto para executar o pipeline / Everything is ready to run the pipeline:"
+    echo "               $0 --exec --runtime $RUNTIME --container-image $CONTAINER_IMAGE"
 fi
 
 # ==============================================================================
