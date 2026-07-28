@@ -73,7 +73,7 @@ process DOWNLOAD_GENOME {
 // PT-BR: Processo 2 - Controle de Qualidade QUAST / EN-US: Process 2 - Quality Control QUAST
 process QC_QUAST {
     tag "${strain}"
-    publishDir "${params.outdir}/01_qc/quast/${strain}", mode: 'copy'
+    publishDir { "${params.outdir}/01_qc/quast/${strain}" }, mode: 'copy'
 
     input:
     tuple val(strain), path(genome_fasta)
@@ -90,7 +90,7 @@ process QC_QUAST {
 // PT-BR: Processo 3 - Controle de Qualidade CheckM2 / EN-US: Process 3 - Quality Control CheckM2
 process QC_CHECKM2 {
     tag "${strain}"
-    publishDir "${params.outdir}/01_qc/checkm2/${strain}", mode: 'copy'
+    publishDir { "${params.outdir}/01_qc/checkm2/${strain}" }, mode: 'copy'
 
     input:
     tuple val(strain), path(genome_fasta)
@@ -125,7 +125,7 @@ process QC_CHECKM2 {
 // PT-BR: Processo 4 - Anotação Bakta / EN-US: Process 4 - Bakta Functional Annotation
 process BAKTA_ANNOTATE {
     tag "${strain}"
-    publishDir "${params.outdir}/02_bakta/${strain}", mode: 'copy'
+    publishDir { "${params.outdir}/02_bakta/${strain}" }, mode: 'copy'
 
     input:
     tuple val(strain), path(genome_fasta)
@@ -157,7 +157,7 @@ process BAKTA_ANNOTATE {
 // PT-BR: Processo 5 - Triagem Trifásica de Candidatos / EN-US: Process 5 - 3-Layer Candidate Screening
 process EXTRACT_CANDIDATES {
     tag "${strain}"
-    publishDir "${params.outdir}/03_candidates/${strain}", mode: 'copy'
+    publishDir { "${params.outdir}/03_candidates/${strain}" }, mode: 'copy'
 
     input:
     tuple val(strain), path(gff3), path(faa), path(json_file), path(gbff)
