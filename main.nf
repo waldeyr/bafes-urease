@@ -22,6 +22,15 @@ params.bakta_db   = "db/db"
 params.checkm2_db = "db/checkm2/CheckM2_database/uniref100.KO.1.dmnd"
 params.outdir     = "results"
 
+// PT-BR: As sequências de ureC curadas de params.references entram na árvore como contexto
+//        filogenético. Sem elas a árvore fica restrita aos UreC encontrados nas estirpes —
+//        que podem ser poucos demais para bootstrap, ou até para haver mais de uma
+//        topologia possível.
+// EN-US: The curated ureC sequences from params.references enter the tree as phylogenetic
+//        context. Without them the tree is limited to the UreC found in the strains — which
+//        may be too few for bootstrap, or even for more than one topology to exist.
+params.phylo_include_refs = true
+
 // PT-BR: Caminhos de banco entram no script de cada processo como texto bruto, e cada
 //        task roda a partir do seu próprio work dir — um valor relativo como "db/db"
 //        precisa ser resolvido contra o diretório de lançamento antes de ser escrito
@@ -174,6 +183,15 @@ process EXTRACT_CANDIDATES {
     tuple val(strain), path(gff3), path(faa), path(json_file), path(gbff)
     path ref_fasta
     path pfam_files
+    // PT-BR: O script entra como arquivo de entrada, não por caminho absoluto: só assim o
+    //        Nextflow inclui o conteúdo dele no hash da tarefa. Chamado por ${projectDir}
+    //        ele fica fora do hash, e um `-resume` depois de corrigir a triagem devolveria
+    //        silenciosamente os TSVs antigos como se fossem novos.
+    // EN-US: The script comes in as an input file, not via an absolute path: only then does
+    //        Nextflow include its content in the task hash. Called through ${projectDir} it
+    //        stays out of the hash, and a `-resume` after fixing the screening would
+    //        silently hand back the old TSVs as if they were fresh.
+    path script_py
 
     output:
     tuple val(strain), path("${strain}_candidates.tsv"), emit: candidates_tsv
@@ -207,7 +225,7 @@ process EXTRACT_CANDIDATES {
         --cpu ${task.cpus} \\
         ${pfam_base} ${faa} > /dev/null
 
-    python3 ${projectDir}/bin/extract_urease_candidates.py \\
+    python3 ${script_py} \\
         --strain ${strain} \\
         --bakta-json ${json_file} \\
         --blast-tsv ${strain}_blast.tsv \\
@@ -222,6 +240,9 @@ process MERGE_ALL_STRAINS {
 
     input:
     path candidate_tsvs
+    // PT-BR: Entra como arquivo para que o conteúdo do script conte no hash da tarefa.
+    // EN-US: Comes in as a file so the script's content counts towards the task hash.
+    path script_py
 
     output:
     path "urease_presence_absence.tsv", emit: matrix
@@ -231,7 +252,7 @@ process MERGE_ALL_STRAINS {
     """
     mkdir -p input_tsvs
     cp ${candidate_tsvs} input_tsvs/
-    python3 ${projectDir}/bin/merge_strain_results.py \\
+    python3 ${script_py} \\
         --candidates-dir input_tsvs \\
         --out-matrix urease_presence_absence.tsv \\
         --out-summary summary_unified.tsv
@@ -265,6 +286,10 @@ process BUILD_PHYLOGENY {
     input:
     path candidate_tsvs
     path faa_files
+    path ref_fasta
+    // PT-BR: Entra como arquivo para que o conteúdo do script conte no hash da tarefa.
+    // EN-US: Comes in as a file so the script's content counts towards the task hash.
+    path script_py
 
     output:
     // PT-BR: O status é sempre emitido; a árvore é opcional porque "menos de 3 UreC"
@@ -277,11 +302,13 @@ process BUILD_PHYLOGENY {
     path "ureC*", optional: true
 
     script:
+    def refs_arg = params.phylo_include_refs ? "--references ${ref_fasta} \\\n        " : ""
     """
     cat ${faa_files} > all_proteins.faa
-    python3 ${projectDir}/bin/build_phylogeny.py \\
+    python3 ${script_py} \\
         --fasta-in all_proteins.faa \\
         --candidates-dir . \\
+        ${refs_arg}--threads ${task.cpus} \\
         --out-dir .
     """
 }
@@ -323,14 +350,23 @@ workflow {
     EXTRACT_CANDIDATES(
         BAKTA_ANNOTATE.out.bakta_results,
         file(params.references),
-        pfam_ch
+        pfam_ch,
+        file("${projectDir}/bin/extract_urease_candidates.py")
     )
 
     all_candidates = EXTRACT_CANDIDATES.out.candidates_tsv.map { _strain, tsv -> tsv }.collect()
     all_gbffs = EXTRACT_CANDIDATES.out.gbff_out.collect()
     all_faas = BAKTA_ANNOTATE.out.bakta_results.map { _strain, _gff, faa, _json, _gbff -> faa }.collect()
 
-    MERGE_ALL_STRAINS(all_candidates)
+    MERGE_ALL_STRAINS(
+        all_candidates,
+        file("${projectDir}/bin/merge_strain_results.py")
+    )
     ANALYZE_SYNTENY(all_gbffs)
-    BUILD_PHYLOGENY(all_candidates, all_faas)
+    BUILD_PHYLOGENY(
+        all_candidates,
+        all_faas,
+        file(params.references),
+        file("${projectDir}/bin/build_phylogeny.py")
+    )
 }
