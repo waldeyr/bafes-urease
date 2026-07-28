@@ -47,7 +47,13 @@ RUN micromamba create -y -n quast -f /tmp/env-quast.yml && \
 ENV PATH="/opt/conda/bin:${PATH}:/opt/conda/envs/quast/bin:/opt/conda/envs/checkm2/bin"
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /workspace
+# PT-BR: Sem diretório de trabalho embutido. O run.sh monta o projeto do host no MESMO
+#        caminho absoluto dentro do container e passa '-w' explicitamente. Um /workspace
+#        vazio aqui só serviria para mascarar um '-w' errado com um diretório mudo.
+# EN-US: No baked-in working directory. run.sh mounts the host project at the SAME
+#        absolute path inside the container and passes '-w' explicitly. An empty
+#        /workspace here would only mask a wrong '-w' behind a silent empty directory.
+WORKDIR /
 
 # Ponto de entrada padrão
 CMD ["/bin/bash"]

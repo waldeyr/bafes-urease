@@ -283,6 +283,58 @@ check_docker() {
     exit 3
 }
 
+# PT-BR: Diretório do projeto no HOST, canonizado. O container monta este mesmo caminho
+#        NO MESMO lugar (mount identidade), então todo caminho absoluto — o work dir do
+#        Nextflow, o ${projectDir}, os bancos — significa a mesma coisa dentro e fora.
+#        'pwd -P' resolve symlinks por dois motivos: o 'docker run -v' precisa de um
+#        caminho real do host, e o Nextflow deriva o launchDir do getcwd() da JVM, que já
+#        é o caminho físico — canonizar aqui faz os dois lados coincidirem exatamente.
+# EN-US: The project directory on the HOST, canonicalized. The container mounts this very
+#        path at the SAME location (identity mount), so every absolute path — Nextflow's
+#        work dir, ${projectDir}, the databases — means the same thing inside and outside.
+#        'pwd -P' resolves symlinks for two reasons: 'docker run -v' needs a real host
+#        path, and Nextflow derives launchDir from the JVM's getcwd(), which is already the
+#        physical path — canonicalizing here makes both sides agree exactly.
+BAFES_WORKDIR="$(pwd -P)"
+
+# PT-BR: O mount identidade impõe duas condições ao caminho do projeto. Falhamos aqui,
+#        antes de qualquer execução de horas, e não no meio de uma tarefa do Nextflow.
+# EN-US: The identity mount imposes two conditions on the project path. We fail here,
+#        before any hours-long run, instead of in the middle of a Nextflow task.
+check_workdir_mount() {
+    # PT-BR: ':' é o separador de campos do '-v'; espaço/tab quebram os scripts gerados
+    #        pelo Nextflow, onde as interpolações de ${projectDir} e absPath() não são
+    #        citadas. Hoje o /workspace esconde o caminho do host do container.
+    # EN-US: ':' is '-v''s field separator; whitespace breaks the scripts Nextflow
+    #        generates, where the ${projectDir} and absPath() interpolations are unquoted.
+    #        Today /workspace hides the host path from the container.
+    case "$BAFES_WORKDIR" in
+        *:*|*[[:space:]]*)
+            echo "[ERRO/ERROR] Caminho do projeto contém ':' ou espaço / path has ':' or whitespace:" >&2
+            echo "             $BAFES_WORKDIR" >&2
+            echo "             Mova o projeto para um caminho sem esses caracteres." >&2
+            echo "             Move the project to a path without those characters." >&2
+            exit 9
+            ;;
+    esac
+
+    # PT-BR: Montar sobre um diretório que existe na imagem esconderia o conteúdo dela —
+    #        /opt/conda guarda TODOS os ambientes das ferramentas.
+    # EN-US: Mounting over a directory that exists in the image would shadow its content —
+    #        /opt/conda holds ALL the tool environments.
+    case "$BAFES_WORKDIR" in
+        /|/bin|/bin/*|/boot|/boot/*|/dev|/dev/*|/etc|/etc/*|/lib|/lib/*|/lib64|/lib64/*|\
+        /opt|/opt/conda|/opt/conda/*|/proc|/proc/*|/root|/root/*|/sbin|/sbin/*|\
+        /sys|/sys/*|/usr|/usr/*|/var|/var/*)
+            echo "[ERRO/ERROR] Projeto em caminho que existe dentro da imagem:" >&2
+            echo "             Project sits at a path that exists inside the image:" >&2
+            echo "             $BAFES_WORKDIR" >&2
+            echo "             O mount esconderia o conteúdo da imagem / it would shadow the image." >&2
+            exit 9
+            ;;
+    esac
+}
+
 # PT-BR: Executa um comando dentro do container (ou no host se RUNTIME=local).
 # EN-US: Runs a command inside the container (or on the host when RUNTIME=local).
 in_container() {
@@ -297,12 +349,24 @@ in_container() {
     # EN-US: BAFES_HOST_GID preserves the original GID when we re-execute through
     #        'sg docker', which swaps the process's primary GID. Without it, artifacts in
     #        results/, db/ and work/ would end up group-owned by 'docker'.
+    # PT-BR: Mount identidade — o caminho DENTRO do container é idêntico ao do host.
+    #        NXF_HOME é o que realmente importa: é lá que o Nextflow grava plugins e
+    #        cache, e precisa cair dentro do mount para persistir. O HOME abaixo é inerte
+    #        na prática — o entrypoint do micromamba o reescreve para /home/mambauser
+    #        sempre que passamos '-u' (verificado na lisina) — mas é derivado da MESMA
+    #        variável para não divergir se a imagem base mudar esse comportamento.
+    # EN-US: Identity mount — the path INSIDE the container is identical to the host's.
+    #        NXF_HOME is the one that matters: Nextflow writes its plugins and cache there
+    #        and it must land inside the mount to persist. The HOME below is inert in
+    #        practice — micromamba's entrypoint rewrites it to /home/mambauser whenever we
+    #        pass '-u' (verified on lisina) — but it derives from the SAME variable so the
+    #        two cannot drift apart if the base image ever stops doing that.
     docker run --rm \
-        -v "$PWD":/workspace \
-        -w /workspace \
+        -v "$BAFES_WORKDIR":"$BAFES_WORKDIR" \
+        -w "$BAFES_WORKDIR" \
         -u "$(id -u):${BAFES_HOST_GID:-$(id -g)}" \
-        -e HOME=/workspace/.nfhome \
-        -e NXF_HOME=/workspace/.nfhome \
+        -e HOME="$BAFES_WORKDIR/.nfhome" \
+        -e NXF_HOME="$BAFES_WORKDIR/.nfhome" \
         -e NCBI_API_KEY="${NCBI_API_KEY:-}" \
         -e NCBI_EMAIL="${NCBI_EMAIL:-}" \
         -e BAFES_INSECURE_SSL="${BAFES_INSECURE_SSL:-}" \
@@ -442,6 +506,7 @@ uniprot_remote_release() {
 
 if [ "$RUNTIME" = "docker" ]; then
     check_docker
+    check_workdir_mount
 elif [ "$RUNTIME" = "singularity" ]; then
     echo "[AVISO/WARNING] RUNTIME=singularity ainda não implementa a camada de container."
     echo "                RUNTIME=singularity does not implement the container layer yet."

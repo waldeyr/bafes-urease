@@ -22,6 +22,17 @@ params.bakta_db   = "db/db"
 params.checkm2_db = "db/checkm2/CheckM2_database/uniref100.KO.1.dmnd"
 params.outdir     = "results"
 
+// PT-BR: Caminhos de banco entram no script de cada processo como texto bruto, e cada
+//        task roda a partir do seu próprio work dir — um valor relativo como "db/db"
+//        precisa ser resolvido contra o diretório de lançamento antes de ser escrito
+//        no script, senão nunca é encontrado.
+// EN-US: Database paths are interpolated into each process script as raw text, and every
+//        task runs from its own work dir — a relative value like "db/db" must be resolved
+//        against the launch directory before it lands in the script, or it is never found.
+def absPath(p) {
+    file(p).toAbsolutePath().toString()
+}
+
 // PT-BR: Processo 0 - Validação Prévia de Recursos / EN-US: Process 0 - Pre-flight Resource Check
 process PREFLIGHT_CHECK {
     tag "resource_check"
@@ -39,8 +50,8 @@ process PREFLIGHT_CHECK {
     python3 ${projectDir}/bin/resource_checker.py \\
         --accessions ${accessions_file} \\
         --references ${references_file} \\
-        --bakta-db ${params.bakta_db} \\
-        --pfam ${params.pfam_hmm} | tee preflight_status.txt
+        --bakta-db ${absPath(params.bakta_db)} \\
+        --pfam ${absPath(params.pfam_hmm)} | tee preflight_status.txt
     """
 }
 
@@ -104,8 +115,8 @@ process QC_CHECKM2 {
     // EN-US: CheckM2 actually runs. Without its database the process fails — there are
     //        no more hardcoded completeness/contamination values.
     """
-    if [ ! -f "${params.checkm2_db}" ]; then
-        echo "[ERRO/ERROR] Banco do CheckM2 não encontrado / CheckM2 database not found: ${params.checkm2_db}" >&2
+    if [ ! -f "${absPath(params.checkm2_db)}" ]; then
+        echo "[ERRO/ERROR] Banco do CheckM2 não encontrado / CheckM2 database not found: ${absPath(params.checkm2_db)}" >&2
         echo "             Rode / Run: ./run.sh --bootstrap" >&2
         exit 1
     fi
@@ -113,7 +124,7 @@ process QC_CHECKM2 {
     checkm2 predict \\
         --input ${genome_fasta} \\
         --output-directory checkm2_out \\
-        --database_path ${params.checkm2_db} \\
+        --database_path ${absPath(params.checkm2_db)} \\
         --threads ${task.cpus} \\
         --extension .fna \\
         --force
@@ -139,13 +150,13 @@ process BAKTA_ANNOTATE {
     // EN-US: Without the Bakta database the process fails. The fake annotation with a
     //        made-up ureC gene was removed — it produced false candidates.
     """
-    if [ ! -d "${params.bakta_db}" ]; then
-        echo "[ERRO/ERROR] Banco do Bakta não encontrado / Bakta database not found: ${params.bakta_db}" >&2
+    if [ ! -d "${absPath(params.bakta_db)}" ]; then
+        echo "[ERRO/ERROR] Banco do Bakta não encontrado / Bakta database not found: ${absPath(params.bakta_db)}" >&2
         echo "             Rode / Run: ./run.sh --bootstrap" >&2
         exit 1
     fi
 
-    bakta --db ${params.bakta_db} \\
+    bakta --db ${absPath(params.bakta_db)} \\
         --prefix ${strain} \\
         --output . \\
         --threads ${task.cpus} \\
@@ -276,17 +287,6 @@ process BUILD_PHYLOGENY {
 }
 
 workflow {
-    // PT-BR: bakta_db/checkm2_db são interpolados como texto bruto dentro do script
-    //        de cada processo — sem canonizar para caminho absoluto aqui, um valor
-    //        relativo como "db/db" nunca seria encontrado, pois cada task roda a
-    //        partir do seu próprio work dir, não da raiz do projeto.
-    // EN-US: bakta_db/checkm2_db are interpolated as raw text inside each process's
-    //        script — without canonicalizing to an absolute path here, a relative
-    //        value like "db/db" would never be found, since each task runs from its
-    //        own work dir, not the project root.
-    params.bakta_db   = file(params.bakta_db).toAbsolutePath().toString()
-    params.checkm2_db = file(params.checkm2_db).toAbsolutePath().toString()
-
     // PT-BR: log.info precisa ficar dentro do workflow — o parser estrito do
     //        Nextflow rejeita instruções no nível superior do script.
     // EN-US: log.info must live inside the workflow — Nextflow's strict parser
@@ -297,9 +297,9 @@ workflow {
 ========================================================================================
  Accessions File  : ${params.accessions}
  References FASTA : ${params.references}
- Pfam HMM File    : ${params.pfam_hmm}
- Bakta DB Path    : ${params.bakta_db}
- CheckM2 DB Path  : ${params.checkm2_db}
+ Pfam HMM File    : ${absPath(params.pfam_hmm)}
+ Bakta DB Path    : ${absPath(params.bakta_db)}
+ CheckM2 DB Path  : ${absPath(params.checkm2_db)}
  Output Directory : ${params.outdir}
 ========================================================================================
 """

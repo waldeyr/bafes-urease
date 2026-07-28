@@ -9,7 +9,30 @@ import sys
 import os
 import time
 import argparse
-from tqdm import tqdm
+
+# PT-BR: O tracker roda no host, fora do container, onde o tqdm pode não existir.
+#        Ele é puramente cosmético, então a ausência da lib degrada para texto simples
+#        em vez de derrubar o monitor com um traceback.
+# EN-US: The tracker runs on the host, outside the container, where tqdm may be absent.
+#        It is purely cosmetic, so a missing library degrades to plain text instead of
+#        killing the monitor with a traceback.
+try:
+    from tqdm import tqdm
+except ImportError:
+    class tqdm:
+        def __init__(self, total=100, desc="", position=0, leave=True, **kwargs):
+            self.total = total
+            self.desc = desc
+            self.n = 0
+
+        def update(self, delta):
+            self.n += delta
+
+        def refresh(self):
+            pass
+
+        def close(self):
+            print(f"  [{self.n:3d}/{self.total}] {self.desc}", flush=True)
 
 # PT-BR: Fases e pesos percentuais / EN-US: Pipeline phases and percentage weights
 PHASES = [
