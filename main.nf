@@ -31,6 +31,24 @@ params.outdir     = "results"
 //        may be too few for bootstrap, or even for more than one topology to exist.
 params.phylo_include_refs = true
 
+// PT-BR: Genes flanqueadores de cada lado do locus de urease no recorte para a sintenia.
+//        5 dá um contexto de ~11 genes por região — suficiente para ver rearranjo e perda
+//        de gene sem arrastar o cromossomo inteiro para dentro do clinker.
+// EN-US: Flanking genes on each side of the urease locus in the synteny slice. 5 gives a
+//        ~11-gene context per region — enough to see rearrangement and gene loss without
+//        dragging the whole chromosome into clinker.
+params.synteny_flank_genes = 5
+
+// PT-BR: Por padrão o recorte ancora só em candidatos de alta confiança ou com perfil Pfam
+//        diagnóstico da via. Ligar isto ancora em TODO candidato, inclusive os domínios
+//        promíscuos (cobW, CT_C_D), que aparecem espalhados longe de qualquer operon de
+//        urease e geram regiões espúrias.
+// EN-US: By default the slice anchors only on high-confidence candidates or on ones with a
+//        Pfam profile diagnostic of the pathway. Turning this on anchors on EVERY candidate,
+//        promiscuous domains included (cobW, CT_C_D), which sit scattered far from any
+//        urease operon and produce spurious regions.
+params.synteny_all_candidates = false
+
 // PT-BR: Caminhos de banco entram no script de cada processo como texto bruto, e cada
 //        task roda a partir do seu próprio work dir — um valor relativo como "db/db"
 //        precisa ser resolvido contra o diretório de lançamento antes de ser escrito
@@ -195,7 +213,7 @@ process EXTRACT_CANDIDATES {
 
     output:
     tuple val(strain), path("${strain}_candidates.tsv"), emit: candidates_tsv
-    path "${strain}.gbff", emit: gbff_out
+    tuple val(strain), path("${strain}.gbff"), emit: gbff_out
     path "${strain}_blast.tsv"
     path "${strain}_hmmer.tbl"
 
@@ -259,22 +277,71 @@ process MERGE_ALL_STRAINS {
     """
 }
 
-// PT-BR: Processo 7 - Análise de Sintenia (clinker) / EN-US: Process 7 - Synteny Analysis (clinker)
+// PT-BR: Processo 7a - Recorte do Locus de Urease / EN-US: Process 7a - Urease Locus Extraction
+//
+// PT-BR: O clinker alinha todas as proteínas contra todas, em todos os pares de entradas.
+//        Passar os 10 genomas inteiros (~46.500 CDS) é da ordem de 10^9 alinhamentos: a
+//        etapa estourou as 8 h de `time` e foi morta com SIGTERM (exit 143). O recorte
+//        prévio do locus reduz isso a algumas dezenas de genes por estirpe — que é o caso
+//        de uso para o qual o clinker foi escrito — e produz um HTML que abre no navegador.
+// EN-US: clinker aligns every protein against every other, across every pair of inputs.
+//        Feeding it the 10 whole genomes (~46,500 CDS) is on the order of 10^9 alignments:
+//        the step blew past its 8 h `time` limit and was killed with SIGTERM (exit 143).
+//        Slicing the locus first cuts that to a few dozen genes per strain — the use case
+//        clinker was written for — and yields an HTML a browser can actually open.
+process EXTRACT_LOCUS {
+    tag "${strain}"
+    publishDir "${params.outdir}/05_synteny/loci", mode: 'copy'
+
+    input:
+    tuple val(strain), path(gbff), path(candidates)
+    // PT-BR: Entra como arquivo para que o conteúdo do script conte no hash da tarefa.
+    // EN-US: Comes in as a file so the script's content counts towards the task hash.
+    path script_py
+
+    output:
+    // PT-BR: O GenBank é opcional porque "esta estirpe não tem urease" é um resultado
+    //        biológico legítimo — e nesse caso nenhuma região é inventada só para a
+    //        estirpe aparecer no mapa. O status é sempre emitido e diz o porquê.
+    // EN-US: The GenBank is optional because "this strain has no urease" is a legitimate
+    //        biological outcome — and in that case no region is invented just to get the
+    //        strain onto the map. The status is always emitted and says why.
+    path "${strain}.gbk", emit: locus_gbk, optional: true
+    path "${strain}_locus_status.txt", emit: status
+
+    script:
+    def all_flag = params.synteny_all_candidates ? "--all-candidates \\\n        " : ""
+    """
+    python3 ${script_py} \\
+        --strain ${strain} \\
+        --gbff ${gbff} \\
+        --candidates ${candidates} \\
+        --flank-genes ${params.synteny_flank_genes} \\
+        ${all_flag}--out ${strain}.gbk \\
+        --status ${strain}_locus_status.txt
+    """
+}
+
+// PT-BR: Processo 7b - Análise de Sintenia (clinker) / EN-US: Process 7b - Synteny Analysis (clinker)
 process ANALYZE_SYNTENY {
     publishDir "${params.outdir}/05_synteny", mode: 'copy'
 
     input:
-    path gbff_files
+    path locus_gbks
 
     output:
     path "synteny.html"
 
     script:
+    // PT-BR: Só os .gbk de locus são encenados aqui, então o diretório da tarefa já é o
+    //        diretório de entrada — não há mais cópia para gbk_inputs/, que quebrava
+    //        quando nenhuma estirpe tinha locus (`cp` sem argumento de origem).
+    // EN-US: Only the locus .gbk files are staged here, so the task directory already is
+    //        the input directory — no more copy into gbk_inputs/, which broke when no
+    //        strain had a locus (`cp` with no source argument).
     """
-    mkdir -p gbk_inputs
-    cp ${gbff_files} gbk_inputs/
     python3 ${projectDir}/bin/synteny_analysis.py \\
-        --gbk-dir gbk_inputs \\
+        --gbk-dir . \\
         --out-dir .
     """
 }
@@ -355,14 +422,32 @@ workflow {
     )
 
     all_candidates = EXTRACT_CANDIDATES.out.candidates_tsv.map { _strain, tsv -> tsv }.collect()
-    all_gbffs = EXTRACT_CANDIDATES.out.gbff_out.collect()
     all_faas = BAKTA_ANNOTATE.out.bakta_results.map { _strain, _gff, faa, _json, _gbff -> faa }.collect()
 
     MERGE_ALL_STRAINS(
         all_candidates,
         file("${projectDir}/bin/merge_strain_results.py")
     )
-    ANALYZE_SYNTENY(all_gbffs)
+
+    // PT-BR: join casa o GenBank e o TSV da MESMA estirpe pela chave; sem isso, dois
+    //        `collect()` independentes poderiam parear S1.gbff com o TSV de outra estirpe.
+    // EN-US: join matches the GenBank and the TSV of the SAME strain by key; without it, two
+    //        independent `collect()` calls could pair S1.gbff with another strain's TSV.
+    locus_input = EXTRACT_CANDIDATES.out.gbff_out
+        .join(EXTRACT_CANDIDATES.out.candidates_tsv)
+
+    EXTRACT_LOCUS(
+        locus_input,
+        file("${projectDir}/bin/extract_urease_locus.py")
+    )
+
+    // PT-BR: ifEmpty([]) garante que o processo rode mesmo sem nenhum locus: aí o
+    //        synteny_analysis.py falha explicitamente ("nenhum GenBank"), em vez de o
+    //        Nextflow simplesmente pular a etapa e a sintenia sumir do relatório em silêncio.
+    // EN-US: ifEmpty([]) makes the process run even with no locus at all: then
+    //        synteny_analysis.py fails explicitly ("no GenBank"), rather than Nextflow just
+    //        skipping the step and synteny vanishing from the report in silence.
+    ANALYZE_SYNTENY(EXTRACT_LOCUS.out.locus_gbk.collect().ifEmpty([]))
     BUILD_PHYLOGENY(
         all_candidates,
         all_faas,

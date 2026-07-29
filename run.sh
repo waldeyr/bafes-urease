@@ -909,12 +909,16 @@ if [ "$EXEC" = true ]; then
         NF_FLAGS="$NF_FLAGS -ansi-log false"
     fi
 
-    # PT-BR: Barra de progresso roda no host; ausência de python3 não bloqueia.
-    # EN-US: Progress bar runs on the host; a missing python3 is not blocking.
+    # PT-BR: Barra de progresso roda no host; ausência de python3 não bloqueia. Ela lê o
+    #        trace REAL do Nextflow (habilitado em nextflow.config) — não simula progresso
+    #        e não declara sucesso; quem reporta o resultado é o bloco de $NF_STATUS abaixo.
+    # EN-US: Progress bar runs on the host; a missing python3 is not blocking. It reads
+    #        Nextflow's REAL trace (enabled in nextflow.config) — it does not simulate
+    #        progress and does not declare success; the $NF_STATUS block below reports the outcome.
     TRACKER_PID=""
     if command -v python3 >/dev/null 2>&1; then
-        TRACKER_ARGS=""
-        [ "$VERBOSE" = true ] && TRACKER_ARGS="--verbose"
+        TRACKER_ARGS="--trace $OUTDIR/nf_trace.txt --accessions $ACCESSIONS"
+        [ "$VERBOSE" = true ] && TRACKER_ARGS="$TRACKER_ARGS --verbose"
         python3 bin/progress_tracker.py $TRACKER_ARGS &
         TRACKER_PID=$!
     fi
@@ -940,7 +944,16 @@ if [ "$EXEC" = true ]; then
     NF_STATUS=$?
     set -e
 
-    [ -n "$TRACKER_PID" ] && { wait "$TRACKER_PID" 2>/dev/null || true; }
+    # PT-BR: O monitor agora acompanha o trace até ser mandado parar — ele não termina
+    #        sozinho como a versão simulada, que morria após ~8 s. Um SIGTERM faz ele
+    #        imprimir o resumo factual das tarefas e sair.
+    # EN-US: The monitor now follows the trace until told to stop — it does not end on its
+    #        own like the simulated version, which died after ~8 s. A SIGTERM makes it print
+    #        the factual task summary and exit.
+    if [ -n "$TRACKER_PID" ]; then
+        kill -TERM "$TRACKER_PID" 2>/dev/null || true
+        wait "$TRACKER_PID" 2>/dev/null || true
+    fi
 
     if [ $NF_STATUS -ne 0 ]; then
         echo ">>> [EXEC FALHOU / EXEC FAILED] Nextflow retornou / returned $NF_STATUS."
