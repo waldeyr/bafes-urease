@@ -29,3 +29,4 @@ __pycache__/
 # Sistema operacional / OS
 .DS_Store
 .claude/*
+results_lisina.zip
