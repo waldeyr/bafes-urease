@@ -30,3 +30,4 @@ __pycache__/
 .DS_Store
 .claude/*
 results_lisina.zip
+results_lisina/report.html
