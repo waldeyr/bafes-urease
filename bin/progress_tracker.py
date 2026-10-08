@@ -39,12 +39,15 @@ except ImportError:
     tqdm = None
 
 # PT-BR: Fases do pipeline: rotulo, processos do Nextflow que a compoem, e quantas tarefas
-#        por estirpe cada uma gera (0 = processo agregado, roda uma vez so).
+#        por estirpe cada processo gera (0 = processo agregado, roda uma vez so; ALT = os
+#        processos sao alternativos, cada estirpe passa por exatamente um deles).
 # EN-US: Pipeline phases: label, the Nextflow processes making it up, and how many tasks per
-#        strain each one spawns (0 = aggregate process, runs exactly once).
+#        strain each process spawns (0 = aggregate process, runs exactly once; ALT = the
+#        processes are alternatives, each strain goes through exactly one of them).
+ALT = -1
 PHASES = [
     ("Pre-flight Check",                  ["PREFLIGHT_CHECK"],                    0),
-    ("Download Genomes (NCBI)",           ["DOWNLOAD_GENOME"],                    1),
+    ("Genomes (NCBI / local)",            ["DOWNLOAD_GENOME", "STAGE_LOCAL_GENOME"], ALT),
     ("Quality Control (QC)",              ["QC_QUAST", "QC_CHECKM2"],             1),
     ("Functional Annotation (Bakta)",     ["BAKTA_ANNOTATE"],                     1),
     ("Candidate Screening (BLAST/HMMER)", ["EXTRACT_CANDIDATES"],                 1),
@@ -78,21 +81,28 @@ def _handle_stop(signum, frame):
     _stop = True
 
 
-def count_strains(accessions_path):
+def count_strains(accessions_path, local_genomes_path=None):
     """
-    PT-BR: Numero de estirpes = linhas de dados do TSV de accessions. Sem ele, o total
-           esperado e desconhecido e o monitor mostra so contagens absolutas.
-    EN-US: Number of strains = data rows in the accessions TSV. Without it the expected
-           total is unknown and the monitor shows plain counts only.
+    PT-BR: Numero de estirpes = linhas de dados do TSV de accessions mais as do TSV de
+           genomas locais, se houver. Sem ele, o total esperado e desconhecido e o
+           monitor mostra so contagens absolutas.
+    EN-US: Number of strains = data rows in the accessions TSV plus those in the local
+           genomes TSV, if any. Without it the expected total is unknown and the monitor
+           shows plain counts only.
     """
     if not accessions_path or not os.path.isfile(accessions_path):
         return None
-    try:
-        with open(accessions_path, newline="") as fh:
-            rows = [r for r in csv.DictReader(fh, delimiter="\t") if any(v.strip() for v in r.values() if v)]
-        return len(rows) or None
-    except OSError:
-        return None
+    total = 0
+    for path in (accessions_path, local_genomes_path):
+        if not path:
+            continue
+        try:
+            with open(path, newline="") as fh:
+                total += len([r for r in csv.DictReader(fh, delimiter="\t")
+                              if any(v.strip() for v in r.values() if v)])
+        except OSError:
+            continue
+    return total or None
 
 
 def process_name(task_name):
@@ -161,7 +171,9 @@ def phase_totals(counts, n_strains):
         done = sum(counts.get(p, {}).get("done", 0) for p in procs)
         failed = sum(counts.get(p, {}).get("failed", 0) for p in procs)
         running = sum(counts.get(p, {}).get("running", 0) for p in procs)
-        if per_strain and n_strains:
+        if per_strain == ALT and n_strains:
+            expected = n_strains
+        elif per_strain and n_strains:
             expected = len(procs) * n_strains
         elif per_strain:
             expected = None
@@ -204,8 +216,8 @@ def render_plain(totals, elapsed, last_render):
     return snapshot
 
 
-def run_tracker(trace_path, accessions_path, poll_seconds):
-    n_strains = count_strains(accessions_path)
+def run_tracker(trace_path, accessions_path, poll_seconds, local_genomes_path=None):
+    n_strains = count_strains(accessions_path, local_genomes_path)
 
     print("\n[PT-BR] Monitorando o trace real do Nextflow / [EN-US] Monitoring Nextflow's real trace")
     print(f"        {trace_path}")
@@ -308,6 +320,9 @@ def main():
     parser.add_argument("--accessions", default="data/accessions.tsv",
                         help="TSV de accessions, para saber o total de estirpes / "
                              "Accessions TSV, to learn the strain total")
+    parser.add_argument("--local-genomes", default=None,
+                        help="TSV de genomas locais, somado ao total de estirpes / "
+                             "Local genomes TSV, added to the strain total")
     parser.add_argument("--poll", type=float, default=15.0,
                         help="Intervalo entre leituras, em segundos / Seconds between reads")
     parser.add_argument("--verbose", action="store_true",
@@ -317,7 +332,7 @@ def main():
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
 
-    return run_tracker(args.trace, args.accessions, max(1.0, args.poll))
+    return run_tracker(args.trace, args.accessions, max(1.0, args.poll), args.local_genomes)
 
 
 if __name__ == "__main__":

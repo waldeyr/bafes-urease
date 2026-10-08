@@ -23,6 +23,7 @@ RUNTIME="docker"
 CONTAINER_IMAGE="bafes-urease"
 BAKTA_DB_TYPE="full"
 ACCESSIONS="data/accessions.tsv"
+LOCAL_GENOMES=""
 REFERENCES="data/urease_references.fasta"
 PFAM="Pfam-A.hmm"
 BAKTA_DB="db/db"
@@ -68,6 +69,8 @@ usage() {
     echo "  --update-db                     Rebaixa bancos cuja versão divergiu da disponível"
     echo "                                  Re-downloads databases whose version drifted from the available one"
     echo "  --accessions PATH               Caminho accessions.tsv / Path to accessions.tsv (default: data/accessions.tsv)"
+    echo "  --local-genomes PATH            TSV (strain, species, fasta) com FASTAs locais, alem dos accessions"
+    echo "                                  TSV (strain, species, fasta) of local FASTAs, in addition to the accessions"
     echo "  --references PATH               Caminho referencias FASTA / Path to references FASTA (default: data/urease_references.fasta)"
     echo "  --pfam PATH                     Caminho Pfam-A.hmm / Path to Pfam-A.hmm (default: Pfam-A.hmm)"
     echo "  --bakta-db PATH                 Caminho banco Bakta / Path to Bakta DB (default: db/db)"
@@ -126,6 +129,7 @@ while [[ $# -gt 0 ]]; do
         --container-image) CONTAINER_IMAGE="$2"; shift 2 ;;
         --bakta-db-type) BAKTA_DB_TYPE="$2"; shift 2 ;;
         --accessions) ACCESSIONS="$2"; shift 2 ;;
+        --local-genomes) LOCAL_GENOMES="$2"; shift 2 ;;
         --references) REFERENCES="$2"; shift 2 ;;
         --pfam) PFAM="$2"; shift 2 ;;
         --bakta-db) BAKTA_DB="$2"; shift 2 ;;
@@ -918,6 +922,7 @@ if [ "$EXEC" = true ]; then
     TRACKER_PID=""
     if command -v python3 >/dev/null 2>&1; then
         TRACKER_ARGS="--trace $OUTDIR/nf_trace.txt --accessions $ACCESSIONS"
+        [ -n "$LOCAL_GENOMES" ] && TRACKER_ARGS="$TRACKER_ARGS --local-genomes $LOCAL_GENOMES"
         [ "$VERBOSE" = true ] && TRACKER_ARGS="$TRACKER_ARGS --verbose"
         python3 bin/progress_tracker.py $TRACKER_ARGS &
         TRACKER_PID=$!
@@ -935,6 +940,7 @@ if [ "$EXEC" = true ]; then
     set +e
     in_container nextflow run main.nf \
         --accessions "$ACCESSIONS" \
+        ${LOCAL_GENOMES:+--local_genomes "$LOCAL_GENOMES"} \
         --references "$REFERENCES" \
         --pfam_hmm "$PFAM" \
         --bakta_db "$BAKTA_DB" \

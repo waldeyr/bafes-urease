@@ -92,7 +92,7 @@ UREASE_PFAM = {
 CORE_UREASE_PROFILES = {'Urease_alpha', 'Urease_beta', 'Urease_gamma',
                         'UreD', 'UreE_N', 'UreE_C', 'UreF'}
 
-PIPELINE_ORDER = ['PREFLIGHT_CHECK', 'DOWNLOAD_GENOME', 'QC_QUAST', 'QC_CHECKM2',
+PIPELINE_ORDER = ['PREFLIGHT_CHECK', 'DOWNLOAD_GENOME', 'STAGE_LOCAL_GENOME', 'QC_QUAST', 'QC_CHECKM2',
                   'BAKTA_ANNOTATE', 'EXTRACT_CANDIDATES', 'MERGE_ALL_STRAINS',
                   'EXTRACT_LOCUS', 'ANALYZE_SYNTENY', 'BUILD_PHYLOGENY']
 
@@ -344,16 +344,30 @@ def parse_organism(header):
             'designation': match.group('strain')}
 
 
-def read_strains(results, accessions_path, warn):
+# PT-BR: Valores da coluna species que significam "taxonomia não determinada".
+# EN-US: species column values that mean "taxonomy not determined".
+UNKNOWN_SPECIES = {'', 'unknown', 'na', 'n/a', '-', 'sp.'}
+
+
+def read_strains(results, accessions_path, local_genomes_path, warn):
     """
     PT-BR: Monta o registro canonico de cada estirpe: id interno, taxonomia real (do genoma),
            acesso GenBank e número de contigs. A taxonomia do sample sheet e apenas fallback.
+           Genomas locais (data/local_genomes.tsv) não têm acesso nem, em geral, linha de
+           definição do RefSeq: sem espécie informada, ficam sem binomial e são rotulados
+           pelo próprio ID.
     EN-US: Builds the canonical record for each strain: internal id, real taxonomy (from the
            genome), GenBank accession and contig count. The sample sheet taxonomy is only a fallback.
+           Local genomes (data/local_genomes.tsv) have no accession and usually no RefSeq
+           definition line: with no species given, they get no binomial and are labelled by
+           their own ID.
     """
     accessions = {}
     for row in read_tsv(accessions_path):
         accessions[row.get('strain', '').strip()] = row
+    local = {}
+    for row in read_tsv(local_genomes_path):
+        local[row.get('strain', '').strip()] = row
 
     genome_dir = os.path.join(results, '00_genomes')
     files = sorted(glob.glob(os.path.join(genome_dir, '*.fna')),
@@ -363,7 +377,18 @@ def read_strains(results, accessions_path, warn):
         code = os.path.basename(path)[:-4]
         contigs, header = scan_fasta(path)
         organism = parse_organism(header)
-        if organism is None:
+        is_local = code in local and code not in accessions
+        if organism is None and is_local:
+            parts = local[code].get('species', '').strip().split()
+            if not parts or local[code].get('species', '').strip().lower() in UNKNOWN_SPECIES:
+                warn('Genoma local sem espécie informada / Local genome with no species given: %s'
+                     % code)
+                organism = {'genus': '', 'species': '', 'designation': code}
+            else:
+                organism = {'genus': parts[0],
+                            'species': parts[1] if len(parts) > 1 else 'sp.',
+                            'designation': code}
+        elif organism is None:
             fallback = accessions.get(code, {}).get('species', '').strip()
             warn('Taxonomia não extraída do genoma / Taxonomy not parsed from genome: %s' % code)
             parts = fallback.split()
@@ -371,6 +396,7 @@ def read_strains(results, accessions_path, warn):
                         'species': parts[1] if len(parts) > 1 else 'sp.',
                         'designation': ''}
         strains[code] = {
+            'local': is_local,
             'code': code,
             'genus': organism['genus'],
             'species': organism['species'],
@@ -384,28 +410,35 @@ def read_strains(results, accessions_path, warn):
     return strains
 
 
+def binomial_of(strain, short=False):
+    """
+    PT-BR: 'Lysinibacillus fusiformis' (ou 'L. fusiformis' se short); '' sem taxonomia.
+    EN-US: 'Lysinibacillus fusiformis' (or 'L. fusiformis' if short); '' with no taxonomy.
+    """
+    if not strain['genus']:
+        return ''
+    if short:
+        return '%s. %s' % (strain['genus'][0], strain['species'])
+    return '%s %s' % (strain['genus'], strain['species'])
+
+
 def label_full(strain):
     """PT-BR: 'Lysinibacillus fusiformis SDF0005'. EN-US: same."""
-    binomial = '%s %s' % (strain['genus'], strain['species'])
-    return (binomial + ' ' + strain['designation']).strip()
+    return (binomial_of(strain) + ' ' + strain['designation']).strip()
 
 
 def label_short(strain):
     """PT-BR: 'L. fusiformis SDF0005' para eixos. EN-US: 'L. fusiformis SDF0005' for axes."""
-    binomial = '%s. %s' % (strain['genus'][0], strain['species'])
-    return (binomial + ' ' + strain['designation']).strip()
+    return (binomial_of(strain, short=True) + ' ' + strain['designation']).strip()
 
 
 def label_html(strain, short=False):
     """PT-BR: Binomial em itálico + designação em roman. EN-US: Italic binomial + roman designation."""
-    if short:
-        binomial = '%s. %s' % (strain['genus'][0], strain['species'])
-    else:
-        binomial = '%s %s' % (strain['genus'], strain['species'])
-    out = '<i>%s</i>' % esc(binomial)
+    binomial = binomial_of(strain, short)
+    parts = ['<i>%s</i>' % esc(binomial)] if binomial else []
     if strain['designation']:
-        out += ' ' + esc(strain['designation'])
-    return out
+        parts.append(esc(strain['designation']))
+    return ' '.join(parts)
 
 
 def read_checkm2(results, strains):
@@ -1289,9 +1322,9 @@ def cell(content, sort_value=None, cls=''):
 
 # ---------------------------------------------------------------------------
 
-def build_context(results, accessions_path, out_dir, warn):
+def build_context(results, accessions_path, local_genomes_path, out_dir, warn):
     ctx = {'results': results, 'out_dir': out_dir}
-    strains = read_strains(results, accessions_path, warn)
+    strains = read_strains(results, accessions_path, local_genomes_path, warn)
     if not strains:
         warn('Nenhum genoma encontrado em 00_genomes / No genome found in 00_genomes')
     read_checkm2(results, strains)
@@ -1366,11 +1399,15 @@ def section_hero(ctx):
     out.append('<p class="eyebrow">%s</p>' % T(('Relatório do pipeline BAFES-Urease',
                                                 'BAFES-Urease pipeline report')))
     out.append('<h1>%s</h1>' % T(ctx['title']))
+    source_pt, source_en = (('do acesso GenBank (ou montagem local)', 'from the GenBank accession '
+                             '(or local assembly)')
+                            if any(s.get('local') for s in strains.values())
+                            else ('do acesso GenBank', 'from the GenBank accession'))
     out.append('<p class="lead">%s</p>' % T((
-        'Mineração genômica da via da urease em %s genomas, do acesso GenBank até o locus '
-        'sintênico e a filogenia de UreC.' % num(len(strains)),
-        'Genomic mining of the urease pathway across %s genomes, from the GenBank accession '
-        'to the syntenic locus and the UreC phylogeny.' % num(len(strains)))))
+        'Mineração genômica da via da urease em %s genomas, %s até o locus '
+        'sintênico e a filogenia de UreC.' % (num(len(strains)), source_pt),
+        'Genomic mining of the urease pathway across %s genomes, %s '
+        'to the syntenic locus and the UreC phylogeny.' % (num(len(strains)), source_en))))
     if window:
         out.append('<p class="meta">%s <span class="mono">%s</span></p>'
                    % (T(('Janela de execução:', 'Execution window:')), esc(window)))
@@ -1397,12 +1434,24 @@ PIPELINE_NODES = [
     ('ANALYZE_SYNTENY', 2, 5, False),
 ]
 
+# PT-BR: Ramo dos genomas locais, desenhado só quando o run teve algum.
+# EN-US: Local-genome branch, drawn only when the run had any.
+LOCAL_NODES = [
+    ('local_genomes', 3, 0, True),
+    ('STAGE_LOCAL_GENOME', 3, 1, False),
+]
+
 PIPELINE_EDGES = [
     ('accessions', 'PREFLIGHT_CHECK'), ('accessions', 'DOWNLOAD_GENOME'),
     ('DOWNLOAD_GENOME', 'QC_QUAST'), ('DOWNLOAD_GENOME', 'QC_CHECKM2'),
     ('DOWNLOAD_GENOME', 'BAKTA_ANNOTATE'), ('BAKTA_ANNOTATE', 'EXTRACT_CANDIDATES'),
     ('EXTRACT_CANDIDATES', 'MERGE_ALL_STRAINS'), ('EXTRACT_CANDIDATES', 'EXTRACT_LOCUS'),
     ('EXTRACT_CANDIDATES', 'BUILD_PHYLOGENY'), ('EXTRACT_LOCUS', 'ANALYZE_SYNTENY'),
+]
+
+LOCAL_EDGES = [
+    ('local_genomes', 'STAGE_LOCAL_GENOME'), ('STAGE_LOCAL_GENOME', 'QC_QUAST'),
+    ('STAGE_LOCAL_GENOME', 'QC_CHECKM2'), ('STAGE_LOCAL_GENOME', 'BAKTA_ANNOTATE'),
 ]
 
 
@@ -1414,23 +1463,34 @@ def section_flow(ctx):
 
     proteins = sum(s.get('proteins', 0) for s in strains.values())
     loci_regions = sum(len(v) for v in ctx['loci'].values())
+    ncbi = [s for s in strains.values() if not s.get('local')]
+    local = [s for s in strains.values() if s.get('local')]
+    nodes = PIPELINE_NODES + (LOCAL_NODES if local else [])
+    edges = PIPELINE_EDGES + (LOCAL_EDGES if local else [])
+    ncbi_contigs = num(sum(s['contigs'] for s in ncbi))
+    local_contigs = num(sum(s['contigs'] for s in local))
     details = {
         'accessions': (('data/accessions.tsv', 'data/accessions.tsv'),
-                       ('%s acessos GenBank' % num(len(strains)),
-                        '%s GenBank accessions' % num(len(strains))), 'entrada'),
+                       ('%s acessos GenBank' % num(len(ncbi)),
+                        '%s GenBank accessions' % num(len(ncbi))), 'entrada'),
+        'local_genomes': (('data/local_genomes.tsv', 'data/local_genomes.tsv'),
+                          ('%s montagens locais' % num(len(local)),
+                           '%s local assemblies' % num(len(local))), 'entrada'),
         'PREFLIGHT_CHECK': (None, ('5 pre-checks', '5 pre-checks'), 'entrada'),
-        'DOWNLOAD_GENOME': (None, ('%s genomas · %s contigs' % (num(len(strains)),
-                                                                     num(sum(s['contigs'] for s in strains.values()))),
-                                   '%s genomes · %s contigs' % (num(len(strains)),
-                                                                     num(sum(s['contigs'] for s in strains.values())))),
+        'DOWNLOAD_GENOME': (None, ('%s genomas · %s contigs' % (num(len(ncbi)), ncbi_contigs),
+                                   '%s genomes · %s contigs' % (num(len(ncbi)), ncbi_contigs)),
                             'entrada'),
+        'STAGE_LOCAL_GENOME': (None, ('%s genomas · %s contigs' % (num(len(local)), local_contigs),
+                                      '%s genomes · %s contigs' % (num(len(local)), local_contigs)),
+                               'entrada'),
         'QC_QUAST': (None, ('métricas de montagem', 'assembly metrics'), 'qualidade'),
         'QC_CHECKM2': (None, ('completude e contaminação', 'completeness and contamination'), 'qualidade'),
         'BAKTA_ANNOTATE': (None, ('%s proteínas' % num(proteins), '%s proteins' % num(proteins)), 'anotação'),
         'EXTRACT_CANDIDATES': (None, ('3 camadas → %s candidatos' % num(len(ctx['candidates'])),
                                       '3 layers → %s candidates' % num(len(ctx['candidates']))),
                                'triagem'),
-        'MERGE_ALL_STRAINS': (None, ('matriz 10×11', '10×11 matrix'), 'matriz'),
+        'MERGE_ALL_STRAINS': (None, ('matriz %s×11' % num(len(ctx['matrix']) or len(strains)),
+                                     '%s×11 matrix' % num(len(ctx['matrix']) or len(strains))), 'matriz'),
         'EXTRACT_LOCUS': (None, ('%s regiões' % num(loci_regions), '%s regions' % num(loci_regions)), 'sintenia'),
         'BUILD_PHYLOGENY': (None, ('%s táxons UreC' % num(ctx['iqtree'].get('taxa', 0)),
                                    '%s UreC taxa' % num(ctx['iqtree'].get('taxa', 0))), 'filogenia'),
@@ -1440,11 +1500,11 @@ def section_flow(ctx):
     col_w, col_gap, box_h, row_gap = 214, 22, 62, 34
     left, top = 12, 14
     width = left * 2 + 4 * col_w + 3 * col_gap
-    rows = max(node[2] for node in PIPELINE_NODES) + 1
+    rows = max(node[2] for node in nodes) + 1
     height = top * 2 + rows * box_h + (rows - 1) * row_gap
 
     def box_rect(node_id):
-        for nid, col, row, is_input in PIPELINE_NODES:
+        for nid, col, row, is_input in nodes:
             if nid == node_id:
                 x = left + col * (col_w + col_gap)
                 y = top + row * (box_h + row_gap)
@@ -1456,7 +1516,7 @@ def section_flow(ctx):
                'markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
                '<path d="M0,0 L10,5 L0,10 z" fill="var(--baseline)"/></marker></defs>')
 
-    for src, dst in PIPELINE_EDGES:
+    for src, dst in edges:
         sx, sy, sw, sh, _ = box_rect(src)
         dx, dy, dw, dh, _ = box_rect(dst)
         x1, y1 = sx + sw / 2.0, sy + sh
@@ -1466,7 +1526,7 @@ def section_flow(ctx):
         out.append(svg_path(path, 'none', 'var(--baseline)', 1.4,
                             extra=' marker-end="url(#arrow)"'))
 
-    for node_id, col, row, is_input in PIPELINE_NODES:
+    for node_id, col, row, is_input in nodes:
         x, y, w, h, _ = box_rect(node_id)
         title, subtitle, anchor = details[node_id]
         tasks = by_process.get(node_id, [])
@@ -1514,7 +1574,10 @@ def section_input(ctx):
         rows.append([
             cell(label_html(strain), plain(label_full(strain))),
             cell('<span class="mono muted">%s</span>' % esc(code), code),
-            cell('<span class="mono">%s</span>' % esc(strain['accession'] or '-'), strain['accession']),
+            cell('<span class="mono">%s</span>' % esc(strain['accession'] or '-')
+                 if not strain.get('local') else
+                 '<span class="muted">%s</span>' % T(('montagem local', 'local assembly')),
+                 strain['accession'] or 'local'),
             cell(num(strain['contigs']), strain['contigs'], 'right'),
             opt_cell(strain.get('quast'), 'Total length', human_bp),
             cell(link(ctx, ('genoma', 'genome'), '00_genomes', '%s.fna' % code)),
@@ -1539,6 +1602,15 @@ def section_input(ctx):
                     'Paenibacillus e Brevibacillus.',
                     '. Four of the strains are not even Bacillus: Heyndrickxia, Peribacillus, '
                     'Paenibacillus and Brevibacillus.'))))
+    local = [s for s in strains.values() if s.get('local')]
+    if local:
+        body += ('<p class="note">%s <code>data/local_genomes.tsv</code>%s</p>' % (
+            T(('%s genomas vieram de montagens locais, fora do NCBI. Sem linha do RefSeq, a '
+               'taxonomia deles é a da coluna species de' % num(len(local)),
+               '%s genomes came from local assemblies, outside NCBI. With no RefSeq line, '
+               'their taxonomy is the one in the species column of' % num(len(local)))),
+            T(('; quando ela é Unknown, a estirpe aparece só pelo ID.',
+               '; when it is Unknown, the strain shows by its ID alone.'))))
 
     checks = []
     for line in ctx['preflight'].splitlines():
@@ -1577,8 +1649,10 @@ def section_input(ctx):
 
     return (card(('Os %s organismos' % num(len(strains)),
                   'The %s organisms' % num(len(strains))), body,
-                 ('Estirpes depositadas pelo grupo, recuperadas do NCBI pelo acesso WGS master.',
-                  'Strains deposited by the group, retrieved from NCBI through the WGS master accession.'))
+                 ('Estirpes depositadas pelo grupo, recuperadas do NCBI pelo acesso WGS master'
+                  + (', mais as montagens locais.' if local else '.'),
+                  'Strains deposited by the group, retrieved from NCBI through the WGS master accession'
+                  + (', plus the local assemblies.' if local else '.')))
             + card(('Verificação previa de recursos', 'Resource pre-flight check'), ''.join(pre_body),
                    ('Executado antes do pipeline: acessos no NCBI, Pfam-A, banco do Bakta, '
                     'referências e ferramentas.',
@@ -1617,7 +1691,7 @@ def section_quality(ctx):
         points.append({
             'x': size / 1e6, 'y': gc,
             'colour': 'var(--series-1)' if is_pos else 'var(--gene-other)',
-            'binomial': '%s. %s' % (strain['genus'][0], strain['species']),
+            'binomial': binomial_of(strain, short=True),
             'suffix': strain['designation'],
             'title': '%s · %s · GC %.2f%%' % (label_full(strain), human_bp(size), gc),
         })
@@ -1687,7 +1761,7 @@ def section_quality(ctx):
 def make_binomial_label(strain):
     """PT-BR: Rótulo de eixo com binomial em itálico. EN-US: Axis label with italic binomial."""
     def render(x, y):
-        return svg_binomial(x, y, '%s. %s' % (strain['genus'][0], strain['species']),
+        return svg_binomial(x, y, binomial_of(strain, short=True),
                             strain['designation'], 11, 'var(--text-primary)', 'end')
     return render
 
@@ -1747,8 +1821,8 @@ def section_screening(ctx):
     #        (38 of the 58 candidates came from HMMER alone), so they get their own chart.
     stages = [
         {'value': proteins, 'label': ('Proteínas preditas', 'Predicted proteins'),
-         'note': ('todas as CDS anotadas pelo Bakta nos dez genomas',
-                  'every CDS annotated by Bakta across the ten genomes')},
+         'note': ('todas as CDS anotadas pelo Bakta nos %s genomas' % num(len(strains)),
+                  'every CDS annotated by Bakta across the %s genomes' % num(len(strains)))},
         {'value': len(candidates), 'label': ('Candidatos retidos', 'Retained candidates'),
          'note': ('união das três camadas de evidência', 'union of the three evidence layers')},
         {'value': high, 'label': ('Alta confiança', 'High confidence'),
@@ -1849,7 +1923,7 @@ def section_matrix(ctx):
             continue
         entries.append({
             'strain': code,
-            'binomial': '%s. %s' % (strain['genus'][0], strain['species']),
+            'binomial': binomial_of(strain, short=True),
             'suffix': strain['designation'],
             'full': label_full(strain),
             'values': {g: row.get(g, '0') for g in UREASE_GENES},
@@ -2118,7 +2192,7 @@ def section_phylogeny(ctx):
             code = tree_label.split('_')[0]
             strain = strains.get(code)
             if strain:
-                binomial = '%s %s' % (strain['genus'], strain['species'])
+                binomial = binomial_of(strain)
                 suffix = '%s · %s' % (strain['designation'], row.get('source_id', ''))
                 title = '%s — %s' % (label_full(strain), row.get('original_header', ''))
             else:
@@ -2696,6 +2770,9 @@ def main():
     parser.add_argument('--accessions', default=None,
                         help='data/accessions.tsv (opcional, só para o acesso GenBank / '
                              'optional, only for the GenBank accession)')
+    parser.add_argument('--local-genomes', default=None,
+                        help='data/local_genomes.tsv (opcional, taxonomia dos genomas locais / '
+                             'optional, taxonomy of the local genomes)')
     parser.add_argument('--lang-default', default='pt', choices=['pt', 'en'],
                         help='Idioma inicial da página / Initial page language')
     parser.add_argument('--title', default=None, help='Título do relatório / Report title')
@@ -2722,16 +2799,24 @@ def main():
                              'data', 'accessions.tsv')
         accessions = guess if os.path.isfile(guess) else None
 
+    local_genomes = args.local_genomes
+    if local_genomes is None:
+        guess = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             'data', 'local_genomes.tsv')
+        local_genomes = guess if os.path.isfile(guess) else None
+
     warnings = []
 
     def warn(message):
         warnings.append(message)
         print('[AVISO/WARNING] %s' % message)
 
-    ctx = build_context(results, accessions, out_dir, warn)
+    ctx = build_context(results, accessions, local_genomes, out_dir, warn)
     ctx['title'] = (args.title if args.title else
-                    ('Urease em Bacillales: mineração genômica de dez estirpes',
-                     'Urease in Bacillales: genomic mining of ten strains'))
+                    ('Urease em Bacillales: mineração genômica de %s estirpes'
+                     % num(len(ctx['strains'])),
+                     'Urease in Bacillales: genomic mining of %s strains'
+                     % num(len(ctx['strains']))))
 
     document = build_html(ctx)
     with open(out_path, 'w', encoding='utf-8') as handle:

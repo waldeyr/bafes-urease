@@ -22,6 +22,16 @@ params.bakta_db   = "db/db"
 params.checkm2_db = "db/checkm2/CheckM2_database/uniref100.KO.1.dmnd"
 params.outdir     = "results"
 
+// PT-BR: TSV opcional (strain, species, fasta) com assemblies FASTA locais, para genomas que
+//        não estão no NCBI. Entram direto em QUAST/CheckM2/Bakta, sem DOWNLOAD_GENOME. O
+//        caminho do FASTA é relativo ao diretório de lançamento. O ID da estirpe não pode
+//        repetir um de params.accessions.
+// EN-US: Optional TSV (strain, species, fasta) of local FASTA assemblies, for genomes that are
+//        not on NCBI. They go straight into QUAST/CheckM2/Bakta, skipping DOWNLOAD_GENOME.
+//        The FASTA path is relative to the launch directory. The strain ID must not repeat
+//        one from params.accessions.
+params.local_genomes = null
+
 // PT-BR: As sequências de ureC curadas de params.references entram na árvore como contexto
 //        filogenético. Sem elas a árvore fica restrita aos UreC encontrados nas estirpes —
 //        que podem ser poucos demais para bootstrap, ou até para haver mais de uma
@@ -58,6 +68,17 @@ params.synteny_all_candidates = false
 //        against the launch directory before it lands in the script, or it is never found.
 def absPath(p) {
     file(p).toAbsolutePath().toString()
+}
+
+// PT-BR: Lê um TSV com cabeçalho, apara espaços e CR (planilhas salvas no Windows) de cada
+//        campo e descarta linhas sem estirpe (linhas em branco).
+// EN-US: Reads a headered TSV, trims whitespace and CR (sheets saved on Windows) from every
+//        field and drops rows with no strain (blank lines).
+def readSheet(p) {
+    file(p, checkIfExists: true)
+        .splitCsv(header: true, sep: '\t')
+        .collect { row -> row.collectEntries { k, v -> [(k?.trim()): v?.trim()] } }
+        .findAll { row -> row.strain }
 }
 
 // PT-BR: Processo 0 - Validação Prévia de Recursos / EN-US: Process 0 - Pre-flight Resource Check
@@ -105,6 +126,41 @@ process DOWNLOAD_GENOME {
         --accession ${accession} \\
         --strain ${strain} \\
         --out ${strain}.fna
+    """
+}
+
+// PT-BR: Processo 1b - Genoma local: valida o FASTA com o mesmo critério do download e o
+//        publica em 00_genomes/{strain}.fna, onde o gerador de relatório procura os genomas.
+// EN-US: Process 1b - Local genome: validates the FASTA with the same criteria as the
+//        download and publishes it to 00_genomes/{strain}.fna, where the report generator
+//        looks for genomes.
+process STAGE_LOCAL_GENOME {
+    tag "${strain}"
+    publishDir "${params.outdir}/00_genomes", mode: 'copy'
+
+    input:
+    tuple val(strain), path(fasta, stageAs: 'input/*')
+
+    output:
+    tuple val(strain), path("${strain}.fna"), emit: genome_fasta
+
+    script:
+    """
+    cp -L input/${fasta.name} ${strain}.fna
+
+    # PT-BR: Estirpe e arquivo vão por argv, não interpolados no código Python.
+    # EN-US: Strain and file go through argv, not interpolated into the Python code.
+    python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from download_genome import validate_fasta
+strain, fasta = sys.argv[2], sys.argv[3]
+n_contigs, n_bases, error = validate_fasta(fasta)
+if error is not None:
+    print("[ERRO/ERROR] %s: genoma local invalido / invalid local genome: %s" % (strain, error), file=sys.stderr)
+    sys.exit(1)
+print("[OK] %s: %d contigs, %s bases" % (strain, n_contigs, format(n_bases, ",")))
+' "${projectDir}/bin" "${strain}" "${strain}.fna"
     """
 }
 
@@ -394,12 +450,26 @@ workflow {
  Pfam HMM File    : ${absPath(params.pfam_hmm)}
  Bakta DB Path    : ${absPath(params.bakta_db)}
  CheckM2 DB Path  : ${absPath(params.checkm2_db)}
+ Local Genomes    : ${params.local_genomes ?: '-'}
  Output Directory : ${params.outdir}
 ========================================================================================
 """
 
-    accessions_ch = Channel.fromPath(params.accessions)
-        .splitCsv(header: true, sep: '\t')
+    accession_rows = readSheet(params.accessions)
+    local_rows = params.local_genomes ? readSheet(params.local_genomes) : []
+
+    // PT-BR: Cada estirpe publica 00_genomes/{strain}.fna e afins: um ID repetido, entre os dois
+    //        TSVs ou dentro de um deles, sobrescreveria resultados em silêncio. Falha antes de
+    //        qualquer tarefa.
+    // EN-US: Each strain publishes 00_genomes/{strain}.fna and friends: a repeated ID, across
+    //        the two TSVs or within one, would silently overwrite results. Fail before any task.
+    strain_ids = (accession_rows + local_rows).collect { row -> row.strain }
+    duplicated = strain_ids.findAll { id -> strain_ids.count(id) > 1 }.unique()
+    if (duplicated) {
+        error("ID de estirpe repetido / Duplicated strain ID: ${duplicated.join(', ')}")
+    }
+
+    accessions_ch = Channel.fromList(accession_rows)
         .map { row -> tuple(row.strain, row.species, row.genbank_accession) }
 
     // PT-BR: O Pfam e seus índices do hmmpress precisam ser encenados juntos.
@@ -409,10 +479,19 @@ workflow {
     PREFLIGHT_CHECK(file(params.accessions), file(params.references))
 
     DOWNLOAD_GENOME(accessions_ch)
-    QC_QUAST(DOWNLOAD_GENOME.out.genome_fasta)
-    QC_CHECKM2(DOWNLOAD_GENOME.out.genome_fasta)
+    genomes_ch = DOWNLOAD_GENOME.out.genome_fasta
 
-    BAKTA_ANNOTATE(DOWNLOAD_GENOME.out.genome_fasta)
+    if (params.local_genomes) {
+        local_ch = Channel.fromList(local_rows)
+            .map { row -> tuple(row.strain, file(row.fasta, checkIfExists: true)) }
+        STAGE_LOCAL_GENOME(local_ch)
+        genomes_ch = genomes_ch.mix(STAGE_LOCAL_GENOME.out.genome_fasta)
+    }
+
+    QC_QUAST(genomes_ch)
+    QC_CHECKM2(genomes_ch)
+
+    BAKTA_ANNOTATE(genomes_ch)
 
     EXTRACT_CANDIDATES(
         BAKTA_ANNOTATE.out.bakta_results,
