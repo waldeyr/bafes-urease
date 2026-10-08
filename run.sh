@@ -491,8 +491,12 @@ pfam_remote_version() {
 bakta_local_version() {
     local vj="$1/version.json" major minor
     [ -s "$vj" ] || return 1
-    major="$(tr -d ' \n' < "$vj" | sed -n 's/.*"major":\([0-9][0-9]*\).*/\1/p')"
-    minor="$(tr -d ' \n' < "$vj" | sed -n 's/.*"minor":\([0-9][0-9]*\).*/\1/p')"
+    # PT-BR: O version.json tem "major"/"minor" também em "software-min"; o do banco é o PRIMEIRO.
+    #        Um sed guloso (.*) pegaria o último e leria o banco v6.0 como 1.11.
+    # EN-US: version.json also has "major"/"minor" inside "software-min"; the database's own are
+    #        the FIRST. A greedy sed (.*) would take the last and read the v6.0 database as 1.11.
+    major="$(tr -d ' \n' < "$vj" | grep -o '"major":[0-9][0-9]*' | head -n1 | cut -d: -f2)"
+    minor="$(tr -d ' \n' < "$vj" | grep -o '"minor":[0-9][0-9]*' | head -n1 | cut -d: -f2)"
     [ -n "$major" ] && [ -n "$minor" ] || return 1
     printf '%s.%s\n' "$major" "$minor"
 }
