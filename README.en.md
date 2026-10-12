@@ -11,12 +11,55 @@
 
 **BAFES-urease-mining** is an automated bioinformatics pipeline built in Nextflow DSL2 and Python 3.11, fully containerized via Docker. It is designed for genomic mining, functional identification, and evolutionary analysis of genes involved in urea catabolism across bacterial genomes.
 
-The primary target dataset comprises 10 aerobic endospore-forming bacteria (**BAFES**, from the Brazilian Portuguese *Bactérias Aeróbicas Formadoras de Endósporos*) genomes from the **CBAFES/UnB collection** isolated from soils of Distrito Federal, Brazil (GenBank accessions `VKHW00000000.1` to `VKIC00000000.1`). The system simultaneously investigates three metabolic avenues:
+The pipeline analyses whatever list of genomes you provide — GenBank/RefSeq accessions and, optionally, local FASTA assemblies (see [Input genomes](#input-genomes)) — and investigates three metabolic avenues in each one:
 
 1. **Canonical Urease Pathway**: Catalytic subunits ($\gamma$ - UreA, $\beta$ - UreB, $\alpha$ - UreC) and accessory maturation proteins (UreD, UreE, UreF, UreG).
 2. **Active Urea Transport System**: ABC transporter complex $urtABCDE$ (UrtA, UrtB, UrtC, UrtD, UrtE).
 3. **Nickel-Independent Alternative Pathway**: Urea carboxylase (`uc`, EC 6.3.4.6) coupled with allophanate hydrolase (`ah`, EC 3.5.1.54).
 
+**Example dataset.** The repository ships configured with the dataset that motivated the project:
+10 aerobic endospore-forming bacteria (**BAFES**, from the Brazilian Portuguese *Bactérias
+Aeróbicas Formadoras de Endósporos*) from the **CBAFES/UnB collection**, isolated from soils of
+Distrito Federal, Brazil (accessions `VKHW00000000.1` to `VKIC00000000.1`, in
+[data/accessions.tsv](data/accessions.tsv)). Throughout this README, counts and strain names (S1,
+S2–S10) refer to that dataset and are for illustration only.
+
+### Input genomes
+
+The pipeline runs on the genomes listed in up to two tab-separated files with a header row:
+
+| File | Option | Columns | Purpose |
+| :--- | :--- | :--- | :--- |
+| `accessions.tsv` | `--accessions` (default: `data/accessions.tsv`) | `strain`, `species`, `genbank_accession` | Public genomes, downloaded from NCBI. Takes an assembly (`GCA_`/`GCF_`) or a WGS master (`VKHW00000000.1`), which is resolved to its assembly before download. |
+| Local genomes TSV | `--local-genomes` (optional) | `strain`, `species`, `fasta` | Assemblies that are not on NCBI. The FASTA path is relative to the launch directory; the genome skips the download and goes straight to QC and Bakta. Example: [data/local_genomes.tsv](data/local_genomes.tsv). |
+
+Rules:
+
+- `strain` is the short identifier that names every output (`results/00_genomes/{strain}.fna`,
+  `{strain}_candidates.tsv`, …). It must not repeat, within a file or across the two: a repeated
+  ID aborts the run before any task starts.
+- `species` is informative (it shows in the report); it may be `Unknown`.
+- Every genome, downloaded or local, goes through the same validation: contigs, >= 500 kb and the
+  nucleotide alphabet. An invalid genome, or one that fails to download, stops the whole run
+  (Nextflow's default error strategy); fix or drop the row and continue with `--resume`.
+- The pre-check requires at least one accession in `accessions.tsv`.
+
+```bash
+# Other public genomes
+./run.sh --exec --accessions my_list.tsv --outdir results_my_list --verbose
+
+# Public genomes + local assemblies
+./run.sh --exec --accessions my_list.tsv --local-genomes my_fastas.tsv --verbose
+```
+
+Two things depend on the taxonomic group of the input genomes:
+
+- **BLASTp references.** The default set is Firmicutes, the phylum of the example dataset. For
+  genomes from other groups, change the slice with `fetch_references.py --query` (see the reference
+  set paragraph in [Data Integrity](#7-data-integrity)).
+- **Resources.** Run time grows with the number of genomes. The CPU and memory limits in
+  [nextflow.config](nextflow.config) are sized for a 96-core host, so that up to 10 strains clear
+  hmmscan in a single wave.
 ---
 
 ## 2. Quick-Start
@@ -86,12 +129,12 @@ flowchart TD
 
 | Phase ID & Name | Process / Script | Description | Rules & Applied Filters | Output Artifacts |
 | :--- | :--- | :--- | :--- | :--- |
-| **00_preflight** | `resource_checker.py` / `PREFLIGHT_CHECK` | Pre-flight validation of external resources & network endpoints | Validates HTTP Status 200/JSON for 10 NCBI accessions, Pfam FTP URL, and Bakta Zenodo DB. Aborts with Exit Code 4 if critical resources are unreachable. | `results/00_preflight/preflight_status.txt` |
-| **00_genomes** | `DOWNLOAD_GENOME` | Automated acquisition of bacterial assembly FASTA files | Queries NCBI Datasets CLI v2 by accession. Automatically falls back to NCBI Entrez `efetch` if Datasets API fails. | `results/00_genomes/{strain}.fna` |
+| **00_preflight** | `resource_checker.py` / `PREFLIGHT_CHECK` | Pre-flight validation of external resources & network endpoints | Validates HTTP Status 200/JSON for every input NCBI accession, Pfam FTP URL, and Bakta Zenodo DB. Aborts with Exit Code 4 if critical resources are unreachable. | `results/00_preflight/preflight_status.txt` |
+| **00_genomes** | `DOWNLOAD_GENOME` | Automated acquisition of bacterial assembly FASTA files | Queries NCBI Datasets CLI v2 by accession. Automatically falls back to NCBI Entrez `efetch` if Datasets API fails. Local genomes (`--local-genomes`) skip the download and go through the same validation in `STAGE_LOCAL_GENOME`. | `results/00_genomes/{strain}.fna` |
 | **01_qc** | `QC_QUAST` & `QC_CHECKM2` | Genomic assembly quality control & contamination check | Evaluates N50, GC content, total length (QUAST), completeness >= 95%, and contamination <= 5% (CheckM2). | `results/01_qc/quast/`, `results/01_qc/checkm2/` |
 | **02_bakta** | `BAKTA_ANNOTATE` | Structural & functional genome annotation | Uses Bakta v1.9+ with full database. Assigns RefSeq/UniRef IDs, EC numbers (3.5.1.5, 6.3.4.6, 3.5.1.54), and gene symbols. | `results/02_bakta/{strain}/` (.json, .gff3, .faa, .gbff) |
 | **03_candidates** | `extract_urease_candidates.py` | 3-Layer candidate screening & evidence consolidation | **Layer A (Bakta)**: EC & gene symbol filtering.<br>**Layer B (BLASTp)**: E-value <= 1e-5, Identity >= 30%, Coverage >= 50%.<br>**Layer C (HMMER3)**: Domain score >= 20.0 against Pfam profiles.<br>**Score**: see [Candidate screening score](#candidate-screening-score) — High (>= 2 points), Medium (1), Low (TrEMBL BLASTp only). | `results/03_candidates/{strain}/{strain}_candidates.tsv` |
-| **04_summary** | `merge_strain_results.py` | Cross-strain matrix aggregation | Merges candidate TSVs across all strains. Constructs binary (1/0) matrix for 10 target genes ($ureA-G$, $urtA$, $uc$, $ah$). | `results/04_summary/urease_presence_absence.tsv`, `summary_unified.tsv` |
+| **04_summary** | `merge_strain_results.py` | Cross-strain matrix aggregation | Merges candidate TSVs across all strains. Constructs binary (1/0) matrix for 11 target genes ($ureA$–$ureH$, $urtA$, $uc$, $ah$). | `results/04_summary/urease_presence_absence.tsv`, `summary_unified.tsv` |
 | **05_synteny** | `synteny_analysis.py` | Gene neighborhood & synteny visualization | Extracts $\pm 10$ kb genomic window centered on $ureC$. Runs `clinker` to produce an interactive SVG/HTML map. | `results/05_synteny/synteny.html` |
 | **06_phylogeny** | `build_phylogeny.py` | UreC evolutionary tree reconstruction | Requires >= 3 UreC protein sequences. Adds the reference UreC and the outgroup (`data/urec_outgroup.fasta`). Runs MAFFT `--auto` alignment $\rightarrow$ trimAl `-automated1` $\rightarrow$ IQ-TREE 2 (1000 ultrafast bootstraps, rooted on the outgroup with `-o`). | `results/06_phylogeny/ureC.treefile`, `ureC.aln` |
 
@@ -147,7 +190,7 @@ flowchart LR
     end
 
     subgraph Internal_Processing ["Pipeline Processing Engine"]
-        Accessions["data/accessions.tsv"] -->|10 Accessions| Preflight["Pre-flight Check"]
+        Accessions["data/accessions.tsv"] -->|Accessions| Preflight["Pre-flight Check"]
         NCBI -->|FASTA Download| Genomes["00_genomes/"]
         Genomes -->|Assembly FASTA| QC["01_qc (QUAST & CheckM2)"]
         Genomes -->|Assembly FASTA| Bakta["02_bakta (Annotation)"]
@@ -193,10 +236,10 @@ flowchart LR
 ## 7. Data Integrity
 
 The pipeline **never fabricates data**. Any step that cannot produce a real result from the
-NCBI genomes fails explicitly (exit != 0) instead of substituting a plausible-looking value:
+input genomes fails explicitly (exit != 0) instead of substituting a plausible-looking value:
 
-- **Genomes.** The study's accessions are WGS master records (e.g. `VKHW00000000.1`), which
-  carry no sequence — an `efetch` on them returns zero bytes.
+- **Genomes.** WGS master accessions (like the example dataset's, `VKHW00000000.1`) carry no
+  sequence — an `efetch` on them returns zero bytes.
   [download_genome.py](bin/download_genome.py) resolves the accession to its assembly
   (`GCA_`/`GCF_`) before downloading, then validates contigs, base count (>= 500 kb), and the
   nucleotide alphabet. Without a real genome, the strain does not continue.
@@ -384,6 +427,7 @@ for launching inside a queue job:
 | `--no-screen` | Runs in the foreground, without creating a session |
 | `--wait` | Blocks until the session finishes and propagates the real exit code |
 | `--accessions PATH` | Path to `accessions.tsv` (default: `data/accessions.tsv`) |
+| `--local-genomes PATH` | TSV of local FASTA assemblies (`strain`, `species`, `fasta`), in addition to the accessions |
 | `--references PATH` | Path to the references FASTA (default: `data/urease_references.fasta`) |
 | `--pfam PATH` | Path to `Pfam-A.hmm` (default: `Pfam-A.hmm`) |
 | `--bakta-db PATH` | Path to the Bakta database (default: `db/db`) |
@@ -471,7 +515,7 @@ cp .env.example .env
 
 | Variable | Effect |
 | :--- | :--- |
-| `NCBI_API_KEY` | Raises the E-utilities rate limit from 3 to 10 req/s. **Recommended**: without it the 10-accession pre-check and the genome downloads are throttled to 3 req/s and are more prone to HTTP 429. Generate one at [account.ncbi.nlm.nih.gov](https://account.ncbi.nlm.nih.gov/) → Account Settings → API Key Management |
+| `NCBI_API_KEY` | Raises the E-utilities rate limit from 3 to 10 req/s. **Recommended**: without it the accession pre-check and the genome downloads are throttled to 3 req/s and are more prone to HTTP 429. Generate one at [account.ncbi.nlm.nih.gov](https://account.ncbi.nlm.nih.gov/) → Account Settings → API Key Management |
 | `NCBI_EMAIL` | Contact e-mail required by the NCBI E-utilities policy |
 | `BAFES_INSECURE_SSL=1` | Disables TLS verification (only for networks behind a TLS-intercepting proxy) |
 
@@ -569,7 +613,14 @@ erDiagram
 | :--- | :--- | :--- |
 | `strain` | String (PK) | Short unique identifier of the bacterial strain (e.g. S1, S2) |
 | `species` | String | Bacterial species binomial (e.g. Lysinibacillus fusiformis) |
-| `genbank_accession` | String | GenBank assembly accession code (e.g. VKHW00000000.1) |
+| `genbank_accession` | String | Assembly (`GCA_`/`GCF_`) or WGS master GenBank accession (e.g. VKHW00000000.1) |
+
+#### Table: `--local-genomes` TSV (e.g. `data/local_genomes.tsv`)
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `strain` | String (PK) | Short unique identifier; must not repeat one from `accessions.tsv` |
+| `species` | String | Species binomial, or `Unknown` |
+| `fasta` | String | Path to the FASTA assembly, relative to the launch directory |
 
 #### Table: `results/03_candidates/{strain}/{strain}_candidates.tsv`
 | Field | Type | Description |
@@ -596,6 +647,7 @@ erDiagram
 | `ureE` | Integer (0/1) | Presence (1) or absence (0) of the accessory protein UreE |
 | `ureF` | Integer (0/1) | Presence (1) or absence (0) of the accessory protein UreF |
 | `ureG` | Integer (0/1) | Presence (1) or absence (0) of the accessory GTPase UreG |
+| `ureH` | Integer (0/1) | Presence (1) or absence (0) of the accessory protein UreH |
 | `urtA` | Integer (0/1) | Presence (1) or absence (0) of the urea transporter UrtA |
 | `uc` | Integer (0/1) | Presence (1) or absence (0) of urea carboxylase |
 | `ah` | Integer (0/1) | Presence (1) or absence (0) of allophanate hydrolase |
@@ -612,10 +664,10 @@ present. A candidate is **High** confidence only when at least two layers agree.
 
 | Database | Step | Why |
 | :--- | :--- | :--- |
-| **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Public source of the 10 BAFES genomes. The study accessions are WGS masters (`VKHW00000000.1`), which hold no sequence; [download_genome.py](bin/download_genome.py) resolves them to the `GCA_`/`GCF_` assembly before downloading. |
-| **CheckM2** (`uniref100.KO.1.dmnd`) | `QC_CHECKM2` | Estimates completeness and contamination with a machine-learning model that does not depend on lineage-specific markers — a good fit for strains classified only as *Bacillus* sp. |
+| **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Public source of the genomes listed in `accessions.tsv`. WGS master accessions (like the example dataset's, `VKHW00000000.1`) hold no sequence; [download_genome.py](bin/download_genome.py) resolves them to the `GCA_`/`GCF_` assembly before downloading. Local genomes (`--local-genomes`) do not go through here. |
+| **CheckM2** (`uniref100.KO.1.dmnd`) | `QC_CHECKM2` | Estimates completeness and contamination with a machine-learning model that does not depend on lineage-specific markers — a good fit for strains with no species assigned, like the example dataset's *Bacillus* sp. |
 | **Bakta DB full** | `BAKTA_ANNOTATE` | Standardised bacterial annotation. Its JSON carries gene, product, EC numbers and `db_xrefs`, which make up Layer A. The *full* DB (~75 GB) assigns more RefSeq/UniRef identifiers than *light*. It bundles AMRFinderPlus, an internal Bakta dependency — which is why it shows up in the version check. |
-| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Layer B (BLASTp) | Restricted to **Firmicutes** (`taxonomy_id:1239`), the BAFES phylum, which keeps identity high against the 30 % identity and 50 % coverage thresholds. For urease, **reviewed** entries only (Swiss-Prot), with curator-verified function. For UrtA–E, `uca` and `atzF` Swiss-Prot has no Firmicutes entry (and no UrtA–E in any organism), so TrEMBL entries come in, searched by exact gene name. The query is live, with release and `sha256` recorded in [urease_references.provenance.txt](data/urease_references.provenance.txt). |
+| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Layer B (BLASTp) | Restricted by default to **Firmicutes** (`taxonomy_id:1239`), the example dataset's phylum, which keeps identity high against the 30 % identity and 50 % coverage thresholds. For urease, **reviewed** entries only (Swiss-Prot), with curator-verified function. For UrtA–E, `uca` and `atzF` Swiss-Prot has no Firmicutes entry (and no UrtA–E in any organism), so TrEMBL entries come in, searched by exact gene name. The query is live, with release and `sha256` recorded in [urease_references.provenance.txt](data/urease_references.provenance.txt). |
 | **UniProtKB/Swiss-Prot** (outgroup) | `BUILD_PHYLOGENY` | Two Gammaproteobacteria UreC that root the UreC tree (see the species question). They live in [urec_outgroup.fasta](data/urec_outgroup.fasta), apart from the BLASTp references. |
 | **Pfam-A** | `EXTRACT_CANDIDATES`, Layer C (hmmscan) | HMM profiles catch remote homology that BLASTp misses and do not depend on Bakta's annotation. Only 10 profiles count as evidence (`UREASE_PFAM_ACCESSIONS` in [extract_urease_candidates.py](bin/extract_urease_candidates.py)). PF01979 (Amidohydro_1) and PF00005 (ABC_tran) are left out because they span whole superfamilies. |
 
@@ -644,20 +696,21 @@ independently. The linear diagram in the [Pipeline Overview](#3-pipeline-overvie
    the phylogeny takes UreC from them, never from the whole proteome. They are independent of each
    other.
 7. **`EXTRACT_LOCUS`** before **`ANALYZE_SYNTENY`** — clinker aligns every protein against every
-   other. With the 10 whole genomes (~46,500 CDS) that was ~10⁹ alignments and the step blew its 8 h
-   limit (exit 143). With the locus sliced out (±5 flanking genes), the step takes seconds.
+   other. In the example dataset, with the 10 whole genomes (~46,500 CDS), that was ~10⁹ alignments
+   and the step blew its 8 h limit (exit 143). With the locus sliced out (±5 flanking genes), the
+   step takes seconds — and its cost now grows with the size of the locus, not of the genome.
 
 ### Which reference species are used at each step, and why?
 
 | Step | Reference | Why |
 | :--- | :--- | :--- |
-| **Study genomes** | S1 *Lysinibacillus fusiformis*; S2–S10 *Bacillus* sp. (CBAFES/UnB collection). Optionally, local genomes via `--local-genomes` (e.g. SDF0008, SDF0018, SDF0030 in [local_genomes.tsv](data/local_genomes.tsv)). | They are the subjects of the study, not references. |
-| **QC** | None. | QUAST runs without `-r`: there is no suitable reference genome for strains with no species assigned. CheckM2 uses a universal model. |
+| **Input genomes** | Those listed in `accessions.tsv` and in the `--local-genomes` TSV. In the example dataset: S1 *Lysinibacillus fusiformis* and S2–S10 *Bacillus* sp. (CBAFES/UnB collection), plus the local genomes SDF0008, SDF0018 and SDF0030 from [local_genomes.tsv](data/local_genomes.tsv). | They are the subject of the analysis, not references. |
+| **QC** | None. | QUAST runs without `-r`: the pipeline does not assume the species of the input genomes, so there is no fixed reference genome. CheckM2 uses a universal model. |
 | **Annotation (Bakta)** | No species fixed (no `--genus`/`--species`). | Bakta's databases are universal; fixing a species would only change the name in the output. |
-| **Layer B (BLASTp), urease** | 109 Swiss-Prot proteins from 21 Firmicutes species, one per gene and species (release 2026_03): UreA 18, UreB 19, UreC 19, UreD 12, UreE 16, UreF 11, UreG 12, UreH 1, UreI 1. Among them *Sporosarcina pasteurii*, *Lysinibacillus sphaericus*, *Bacillus subtilis*, *B. cereus*, *B. velezensis*, *Geobacillus kaustophilus*, *Halalkalibacterium halodurans*, plus *Staphylococcus*, *Streptococcus* and clostridia. | Same phylum as the BAFES, with verified function. *S. pasteurii* is the model Firmicutes urease; *L. sphaericus* shares S1's genus; *Bacillus* and *Geobacillus* are close relatives of S2–S10. Deduplication took *S. aureus* from 94 entries down to 7 (one per gene). |
+| **Layer B (BLASTp), urease** | 109 Swiss-Prot proteins from 21 Firmicutes species, one per gene and species (release 2026_03): UreA 18, UreB 19, UreC 19, UreD 12, UreE 16, UreF 11, UreG 12, UreH 1, UreI 1. Among them *Sporosarcina pasteurii*, *Lysinibacillus sphaericus*, *Bacillus subtilis*, *B. cereus*, *B. velezensis*, *Geobacillus kaustophilus*, *Halalkalibacterium halodurans*, plus *Staphylococcus*, *Streptococcus* and clostridia. | Same phylum as the example dataset, with verified function. *S. pasteurii* is the model Firmicutes urease; in the example, *L. sphaericus* shares S1's genus, and *Bacillus* and *Geobacillus* are close relatives of S2–S10. For genomes from another phylum, change the slice with `--query`. Deduplication took *S. aureus* from 94 entries down to 7 (one per gene). |
 | **Layer B (BLASTp), transport and alternative pathway** | 851 TrEMBL Firmicutes proteins, one per gene and species: UrtA 130, UrtB 139, UrtC 136, UrtD 137, UrtE 137 (141 species), `uca` 84 and `atzF` 88. Most represented genera: *Paenibacillus*, *Cohnella*, *Bacillus*, *Metabacillus*, *Geobacillus*. | They are the only Firmicutes carrying these genes in UniProt. `uca` and `atzF` are searched by gene name rather than EC number, because EC 3.5.1.54 also brings the KipI/KipA "allophanate hydrolases", which in *Bacillus* are the 5-oxoprolinase PxpB/PxpC. |
 | **Layer C (Pfam)** | No species. | Family profiles built from alignments spanning many taxa. |
-| **Synteny** | Study strains only. | The goal is to compare operon organisation across the isolates. A strain with no urease is left off the map, and no locus is invented for it. |
+| **Synteny** | Input strains only. | The goal is to compare operon organisation across the isolates. A strain with no urease is left off the map, and no locus is invented for it. |
 | **UreC phylogeny** | The strains' UreC + 19 reference UreC, one per Firmicutes species (including *S. pasteurii*, *B. subtilis*, *B. cereus*, *B. velezensis*, *G. kaustophilus* and *H. halodurans*) + outgroup: the UreC of *Klebsiella aerogenes* (P18314) and *Proteus mirabilis* (P17086). | IQ-TREE needs >= 4 sequences for bootstrap, and the references place the strains within the phylum. The outgroup are Gammaproteobacteria model ureases with solved structures, clearly outside Firmicutes; IQ-TREE roots the tree on them (`-o`). Can be turned off with `--phylo_include_refs false` and `--phylo_outgroup false`. |
 
 **Known limitations.**
