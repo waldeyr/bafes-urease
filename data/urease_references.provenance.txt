@@ -1,8 +1,12 @@
 # PT-BR: Procedencia das referencias de urease / EN-US: Urease reference provenance
-query_url	https://rest.uniprot.org/uniprotkb/stream?compressed=true&format=fasta&query=%28protein_name%3Aurease%29+AND+%28taxonomy_id%3A1239%29+AND+%28reviewed%3Atrue%29
-uniprot_release	2026_02
-uniprot_release_date	10-June-2026
-downloaded_at	Tue, 28 Jul 2026 00:36:18 GMT
+query_url	https://rest.uniprot.org/uniprotkb/stream?compressed=true&format=fasta&query=%28taxonomy_id%3A1239%29+AND+%28%28%28protein_name%3Aurease%29+AND+%28reviewed%3Atrue%29%29+OR+%28gene_exact%3AurtA+OR+gene_exact%3AurtB+OR+gene_exact%3AurtC+OR+gene_exact%3AurtD+OR+gene_exact%3AurtE+OR+gene_exact%3Auca+OR+gene_exact%3AatzF%29%29
+uniprot_release	2026_03
+uniprot_release_date	02-September-2026
+downloaded_at	Mon, 12 Oct 2026 11:35:26 GMT
 fasta	urease_references.fasta
-sequences	218
-sha256	02c08cd4ac7eca2f00b0875aaef3d142308847508b2d219e23494145edda24ec
+sequences	960
+sequences_raw	1074
+deduplication	one per (gene, species); reviewed first, then lowest accession
+reviewed	109
+unreviewed	851
+sha256	64a976499ef8f1b1baed02088211f33e3245a449a2c5602d776ea20f0746ab49

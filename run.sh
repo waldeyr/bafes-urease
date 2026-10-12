@@ -25,6 +25,8 @@ BAKTA_DB_TYPE="full"
 ACCESSIONS="data/accessions.tsv"
 LOCAL_GENOMES=""
 REFERENCES="data/urease_references.fasta"
+# PT-BR: Fixo, como o padrão de params.phylo_outgroup no main.nf / EN-US: Fixed, like the params.phylo_outgroup default in main.nf
+OUTGROUP="data/urec_outgroup.fasta"
 PFAM="Pfam-A.hmm"
 BAKTA_DB="db/db"
 CHECKM2_DB_DIR="db/checkm2"
@@ -573,12 +575,14 @@ EOF
         echo "  [1/5] Accessions já presente / already present: $ACCESSIONS"
     fi
 
-    # PT-BR: As referências são BAIXADAS do UniProt por consulta REST (ureases de Firmicutes
-    #        revisadas). Nunca são escritas localmente: um stub inventado geraria evidência
-    #        falsa de BLASTp e contaminaria toda a triagem de candidatos.
-    # EN-US: References are DOWNLOADED from UniProt via a REST query (reviewed Firmicutes
-    #        ureases). They are never written locally: a made-up stub would generate false
-    #        BLASTp evidence and contaminate the whole candidate screening.
+    # PT-BR: As referências são BAIXADAS do UniProt por consulta REST (Firmicutes: ureases
+    #        revisadas + urtA-E, uca e atzF) junto com o grupo externo da árvore de UreC.
+    #        Nunca são escritas localmente: um stub inventado geraria evidência falsa de
+    #        BLASTp e contaminaria toda a triagem de candidatos.
+    # EN-US: References are DOWNLOADED from UniProt via a REST query (Firmicutes: reviewed
+    #        ureases + urtA-E, uca and atzF) together with the UreC tree outgroup. They are
+    #        never written locally: a made-up stub would generate false BLASTp evidence and
+    #        contaminate the whole candidate screening.
     # PT-BR: A "versão" das referências é a release do UniProt gravada na procedência
     #        pelo fetch_references.py. Sem procedência (FASTA de uma versão anterior do
     #        script) a release é desconhecida e a cópia local é mantida.
@@ -593,11 +597,18 @@ EOF
             "$REF_LOCAL_REL" "$(uniprot_remote_release || true)"
         [ "$DB_DECISION" = "update" ] || REF_DOWNLOAD=false
     fi
+    # PT-BR: Instalação anterior ao grupo externo: as referências existem, ele não.
+    # EN-US: Install predating the outgroup: the references exist, it does not.
+    if [ ! -s "$OUTGROUP" ]; then
+        echo "        Grupo externo ausente / Outgroup missing: $OUTGROUP"
+        REF_DOWNLOAD=true
+    fi
 
     if [ "$REF_DOWNLOAD" = true ]; then
         echo "        Baixando referências de urease do UniProt / Downloading urease references from UniProt..."
         mkdir -p "$(dirname "$REFERENCES")"
-        if ! in_container python3 bin/fetch_references.py --out "$REFERENCES"; then
+        if ! in_container python3 bin/fetch_references.py --out "$REFERENCES" \
+                --outgroup-out "$OUTGROUP"; then
             echo "  [ERRO/ERROR] Falha ao obter as referências / Failed to obtain references."
             echo "               Nenhuma sequência será inventada / No sequence will be invented."
             exit 7

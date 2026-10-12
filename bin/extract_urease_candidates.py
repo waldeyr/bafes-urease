@@ -19,6 +19,15 @@ EN-US: Layer C had the same problem on a larger scale: the Pfam profile was read
        filtered, so every protein carrying any known Pfam-A domain entered the screening
        (3,836 of S1's 3,854 rows were hits with no relation to urease). Only the profiles
        in UREASE_PFAM_ACCESSIONS count now.
+
+PT-BR: Pontuacao — cada camada vale 1 ponto, exceto o BLASTp cujo melhor acerto e uma
+       referencia NAO revisada (TrEMBL): ela e registrada (blast_ref_status = unreviewed) mas
+       vale 0, porque a anotacao do TrEMBL e automatica como a do Bakta e nao e evidencia
+       independente. >= 2 pontos = Alta; 1 = Media; 0 com acerto TrEMBL = Baixa.
+EN-US: Scoring — each layer is worth 1 point, except a BLASTp whose best hit is an UNREVIEWED
+       reference (TrEMBL): it is recorded (blast_ref_status = unreviewed) but is worth 0,
+       because TrEMBL annotation is automatic like Bakta's and is not independent evidence.
+       >= 2 points = High; 1 = Medium; 0 with a TrEMBL hit = Low.
 """
 
 import sys
@@ -43,13 +52,15 @@ HMMER_MIN_DOMAIN_SCORE = 20.0
 #        do ureC (232.2 em S1), mas cobre a superfamilia inteira de amido-hidrolases; o
 #        PF00449 marca a mesma proteina com 179.0, entao nada se perde e o ruido cai.
 #        Os transportadores urt* nao entram aqui — PF00005 (ABC_tran) e largo demais —
-#        e seguem cobertos pelas Camadas A (Bakta) e B (BLASTp).
+#        e seguem cobertos pelas Camadas A (Bakta) e B (BLASTp, contra as UrtA-E de
+#        Firmicutes nao revisadas que o fetch_references.py baixa).
 # EN-US: Pfam profiles that constitute urease evidence (Layer C). Accessions without version.
 #        PF01979 (Amidohydro_1) is deliberately excluded: it is ureC's top-scoring hit
 #        (232.2 in S1) but spans the whole amidohydrolase superfamily; PF00449 marks the
 #        same protein at 179.0, so nothing is lost and the noise drops. The urt*
 #        transporters are not listed here — PF00005 (ABC_tran) is far too broad — and stay
-#        covered by Layers A (Bakta) and B (BLASTp).
+#        covered by Layers A (Bakta) and B (BLASTp, against the unreviewed Firmicutes UrtA-E
+#        that fetch_references.py downloads).
 UREASE_PFAM_ACCESSIONS = {
     "PF00449": "Urease_alpha (ureC)",
     "PF00699": "Urease_beta (ureB)",
@@ -67,6 +78,15 @@ UREASE_PFAM_ACCESSIONS = {
 # EN-US: Fallback for when the accession column comes as '-' in the domtblout.
 UREASE_PFAM_NAMES = {"urease_alpha", "urease_beta", "urease_gamma", "ured", "uree_n",
                      "uree_c", "uref", "cobw", "nico", "ct_c_d"}
+
+# PT-BR: Status do 5o campo do cabecalho escrito pelo fetch_references.py
+#        (ref|gene|UniProt:acesso|organismo|status|Naa). Um FASTA proprio fora desse formato
+#        fica "unknown" e pontua como revisado — o comportamento de antes desta regra.
+# EN-US: Status from the 5th field of the header written by fetch_references.py
+#        (ref|gene|UniProt:accession|organism|status|Naa). A custom FASTA outside that format
+#        is "unknown" and scores as reviewed — the behaviour from before this rule.
+REF_STATUS_UNREVIEWED = "unreviewed"
+REF_STATUS_UNKNOWN = "unknown"
 
 # PT-BR: Colunas do -outfmt 6 usado no main.nf / EN-US: Columns of the -outfmt 6 used in main.nf
 BLAST_COLUMNS = ["qseqid", "sseqid", "pident", "length", "qstart", "qend",
@@ -116,6 +136,14 @@ def parse_bakta_json(json_file):
     return candidates
 
 
+def reference_status(sseqid):
+    """PT-BR: Status de revisao da referencia. / EN-US: Review status of the reference."""
+    fields = str(sseqid).split('|')
+    if len(fields) >= 6 and fields[0] == 'ref' and fields[4] in ('reviewed', REF_STATUS_UNREVIEWED):
+        return fields[4]
+    return REF_STATUS_UNKNOWN
+
+
 def parse_blast_tsv(blast_file):
     """
     PT-BR: Extrai IDs de consulta do BLASTp que passam nos limiares (Camada B).
@@ -148,6 +176,7 @@ def parse_blast_tsv(blast_file):
         if qid not in hits:
             hits[qid] = {
                 'subject': str(row['sseqid']),
+                'status': reference_status(row['sseqid']),
                 'identity': float(row['pident']),
                 'coverage': float(row['coverage']),
                 'evalue': float(row['evalue']),
@@ -255,13 +284,16 @@ def main():
         blast = blast_hits.get(fid)
         hmmer = hmmer_hits.get(fid)
 
-        # PT-BR: Regra de Consenso: Alta (>=2 camadas), Media (1 camada)
-        # EN-US: Consensus Rule: High (>=2 layers), Medium (1 layer)
-        score = sum([in_bakta, blast is not None, hmmer is not None])
-        if score >= 2:
+        # PT-BR: Pontuacao (ver docstring): o BLASTp contra TrEMBL nao pontua.
+        # EN-US: Scoring (see docstring): BLASTp against TrEMBL scores nothing.
+        blast_scores = blast is not None and blast['status'] != REF_STATUS_UNREVIEWED
+        points = sum([in_bakta, blast_scores, hmmer is not None])
+        if points >= 2:
             confidence = "Alta/High"
-        elif score == 1:
+        elif points == 1:
             confidence = "Media/Medium"
+        elif blast is not None:
+            confidence = "Baixa/Low"
         else:
             continue  # PT-BR: sem evidencia nenhuma / EN-US: no evidence at all
 
@@ -284,22 +316,26 @@ def main():
             'blast_identity': round(blast['identity'], 1) if blast else '',
             'blast_coverage': round(blast['coverage'], 1) if blast else '',
             'blast_evalue': blast['evalue'] if blast else '',
+            'blast_ref_status': blast['status'] if blast else '',
             'hmmer_profile': hmmer['profile'] if hmmer else '',
             'hmmer_score': hmmer['score'] if hmmer else '',
+            'evidence_points': points,
             'confidence': confidence,
         })
 
     columns = ['strain', 'feature_id', 'bakta_alt_id', 'gene', 'product', 'layer_bakta',
                'layer_blast', 'layer_hmmer', 'blast_subject', 'blast_identity',
-               'blast_coverage', 'blast_evalue', 'hmmer_profile', 'hmmer_score',
-               'confidence']
+               'blast_coverage', 'blast_evalue', 'blast_ref_status', 'hmmer_profile',
+               'hmmer_score', 'evidence_points', 'confidence']
 
     df_out = pd.DataFrame(results, columns=columns)
     df_out.to_csv(args.out_tsv, sep='\t', index=False)
 
     high = sum(1 for r in results if r['confidence'] == "Alta/High")
+    low = sum(1 for r in results if r['confidence'] == "Baixa/Low")
     print(f"[OK] Candidatos consolidados salvos em / Consolidated candidates saved to: {args.out_tsv} "
-          f"({len(df_out)} candidatos, {high} de alta confianca / candidates, {high} high confidence)")
+          f"({len(df_out)} candidatos, {high} de alta confianca, {low} de baixa (so TrEMBL) "
+          f"/ candidates, {high} high confidence, {low} low (TrEMBL only))")
     return 0
 
 

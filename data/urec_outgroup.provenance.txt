@@ -1,0 +1,8 @@
+# PT-BR: Procedencia das referencias de urease / EN-US: Urease reference provenance
+query_url	https://rest.uniprot.org/uniprotkb/stream?compressed=true&format=fasta&query=%28accession%3AP18314+OR+accession%3AP17086%29+AND+%28reviewed%3Atrue%29
+uniprot_release	2026_03
+uniprot_release_date	02-September-2026
+downloaded_at	Mon, 12 Oct 2026 11:35:28 GMT
+fasta	urec_outgroup.fasta
+sequences	2
+sha256	a62a3ead64fba3ea54ac21a3ce9838c533a58c786aa788c2f7cdd904a180edf3

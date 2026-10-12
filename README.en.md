@@ -90,10 +90,46 @@ flowchart TD
 | **00_genomes** | `DOWNLOAD_GENOME` | Automated acquisition of bacterial assembly FASTA files | Queries NCBI Datasets CLI v2 by accession. Automatically falls back to NCBI Entrez `efetch` if Datasets API fails. | `results/00_genomes/{strain}.fna` |
 | **01_qc** | `QC_QUAST` & `QC_CHECKM2` | Genomic assembly quality control & contamination check | Evaluates N50, GC content, total length (QUAST), completeness >= 95%, and contamination <= 5% (CheckM2). | `results/01_qc/quast/`, `results/01_qc/checkm2/` |
 | **02_bakta** | `BAKTA_ANNOTATE` | Structural & functional genome annotation | Uses Bakta v1.9+ with full database. Assigns RefSeq/UniRef IDs, EC numbers (3.5.1.5, 6.3.4.6, 3.5.1.54), and gene symbols. | `results/02_bakta/{strain}/` (.json, .gff3, .faa, .gbff) |
-| **03_candidates** | `extract_urease_candidates.py` | 3-Layer candidate screening & evidence consolidation | **Layer A (Bakta)**: EC & gene symbol filtering.<br>**Layer B (BLASTp)**: E-value <= 1e-5, Identity >= 30%, Coverage >= 50%.<br>**Layer C (HMMER3)**: Domain score >= 20.0 against Pfam profiles.<br>**Consensus Rule**: High Confidence (>=2 layers), Medium Confidence (1 layer). | `results/03_candidates/{strain}/{strain}_candidates.tsv` |
+| **03_candidates** | `extract_urease_candidates.py` | 3-Layer candidate screening & evidence consolidation | **Layer A (Bakta)**: EC & gene symbol filtering.<br>**Layer B (BLASTp)**: E-value <= 1e-5, Identity >= 30%, Coverage >= 50%.<br>**Layer C (HMMER3)**: Domain score >= 20.0 against Pfam profiles.<br>**Score**: see [Candidate screening score](#candidate-screening-score) — High (>= 2 points), Medium (1), Low (TrEMBL BLASTp only). | `results/03_candidates/{strain}/{strain}_candidates.tsv` |
 | **04_summary** | `merge_strain_results.py` | Cross-strain matrix aggregation | Merges candidate TSVs across all strains. Constructs binary (1/0) matrix for 10 target genes ($ureA-G$, $urtA$, $uc$, $ah$). | `results/04_summary/urease_presence_absence.tsv`, `summary_unified.tsv` |
 | **05_synteny** | `synteny_analysis.py` | Gene neighborhood & synteny visualization | Extracts $\pm 10$ kb genomic window centered on $ureC$. Runs `clinker` to produce an interactive SVG/HTML map. | `results/05_synteny/synteny.html` |
-| **06_phylogeny** | `build_phylogeny.py` | UreC evolutionary tree reconstruction | Requires >= 3 UreC protein sequences. Runs MAFFT `--auto` alignment $\rightarrow$ trimAl `-automated1` $\rightarrow$ IQ-TREE 2 (1000 ultrafast bootstraps). | `results/06_phylogeny/ureC.treefile`, `ureC.aln` |
+| **06_phylogeny** | `build_phylogeny.py` | UreC evolutionary tree reconstruction | Requires >= 3 UreC protein sequences. Adds the reference UreC and the outgroup (`data/urec_outgroup.fasta`). Runs MAFFT `--auto` alignment $\rightarrow$ trimAl `-automated1` $\rightarrow$ IQ-TREE 2 (1000 ultrafast bootstraps, rooted on the outgroup with `-o`). | `results/06_phylogeny/ureC.treefile`, `ureC.aln` |
+
+### Candidate screening score
+
+Each layer is worth 1 point, with one exception: a BLASTp whose **best hit** is a TrEMBL
+(unreviewed) reference is recorded but scores nothing. TrEMBL annotation is automatic, like
+Bakta's, so agreeing with it is not independent evidence. The status of the best hit goes in the
+`blast_ref_status` column, and the points in `evidence_points`.
+
+| Evidence | Points |
+| :--- | :--- |
+| Layer A — Bakta: target gene, EC number or product | 1 |
+| Layer B — BLASTp with its best hit on a reviewed (Swiss-Prot) reference | 1 |
+| Layer B — BLASTp with its best hit on an unreviewed (TrEMBL) reference | 0 (recorded) |
+| Layer C — HMMER: Pfam profile from the list, domain score >= 20 | 1 |
+
+| Points | Confidence |
+| :--- | :--- |
+| >= 2 | High |
+| 1 | Medium |
+| 0, with a TrEMBL BLASTp hit | Low |
+
+| Example | Points | Confidence |
+| :--- | :--- | :--- |
+| Bakta + BLASTp (Swiss-Prot) + HMMER | 3 | High |
+| Bakta + BLASTp (Swiss-Prot) | 2 | High |
+| Bakta + HMMER + BLASTp (TrEMBL) | 2 | High |
+| Bakta + BLASTp (TrEMBL) | 1 | Medium |
+| HMMER + BLASTp (TrEMBL) | 1 | Medium |
+| Bakta only, or HMMER only | 1 | Medium |
+| BLASTp (TrEMBL) only | 0 | Low |
+
+Today only UrtA–E, `uca` and `atzF` come from TrEMBL. UrtA–E and `atzF` have no profile in the
+Layer C list, so in practice they reach Medium at most. Urea carboxylase (`uca`) carries the CT_C_D
+domain (PF02682), which is on the list, so it can still reach High with Bakta + HMMER. A custom reference FASTA (`--references`) whose
+headers do not follow the `ref|gene|UniProt:accession|organism|status|Naa` format gets status
+`unknown` and scores as reviewed.
 
 ---
 
@@ -107,7 +143,7 @@ flowchart LR
         NCBI["NCBI GenBank (nuccore / WGS)"]
         PfamDB["EMBL-EBI Pfam-A Database"]
         BaktaDB["Bakta Database (Zenodo DB)"]
-        RefDB["Curated Reference FASTA (data/urease_references.fasta)"]
+        RefDB["UniProt Reference FASTA (data/urease_references.fasta)"]
     end
 
     subgraph Internal_Processing ["Pipeline Processing Engine"]
@@ -168,22 +204,30 @@ NCBI genomes fails explicitly (exit != 0) instead of substituting a plausible-lo
   completeness/contamination values.
 - **Annotation.** Without the Bakta database, `BAKTA_ANNOTATE` fails. There is no substitute
   annotation with invented genes.
-- **References.** The sequences in [urease_references.fasta](data/urease_references.fasta) are
-  downloaded from UniProt via a REST query: reviewed (Swiss-Prot) Firmicutes (`taxonomy_id:1239`)
-  urease proteins (`protein_name:urease`). Nothing is synthesised locally — a network failure, a
-  truncated response or an empty result set aborts without writing the FASTA. Regenerate with
+- **References.** The sequences in [urease_references.fasta](data/urease_references.fasta) and
+  the outgroup in [urec_outgroup.fasta](data/urec_outgroup.fasta) are downloaded from UniProt via
+  REST queries (described below). Nothing is synthesised locally — a network failure, a
+  truncated response or an empty result set aborts without writing either file. Regenerate with
   `python3 bin/fetch_references.py`.
 - **Synteny and phylogeny.** No placeholder HTML and no partial trees. With fewer than 3 UreC
   sequences, that is recorded in `phylogeny_status.txt` as a legitimate outcome — no tree is
   possible — and no tree file is written.
 
-Reference set — query `(protein_name:urease) AND (taxonomy_id:1239) AND (reviewed:true)` against
-`https://rest.uniprot.org/uniprotkb/stream`, with a sanity floor of 100 sequences (below that the
-response is treated as truncated and aborts). The set is **live**: it tracks UniProt and changes
-with every release (218 sequences on release 2026_02). Reproducibility does not rest on a fixed
-accession list but on the provenance record written next to the FASTA
-(`data/urease_references.provenance.txt` — release, date, count and `sha256`). To pin a different
-slice, use `--query` or `--url`.
+Reference set — query `(taxonomy_id:1239) AND (((protein_name:urease) AND (reviewed:true)) OR
+(gene_exact:urtA OR … OR gene_exact:urtE OR gene_exact:uca OR gene_exact:atzF))` against
+`https://rest.uniprot.org/uniprotkb/stream`. All entries are Firmicutes: the urease subunits and
+accessory proteins (UreA–I) are reviewed (Swiss-Prot) only, while the transporter (UrtA–E), urea
+carboxylase (`uca`) and allophanate hydrolase (`atzF`) may be unreviewed (TrEMBL). The set keeps
+one sequence per gene and species — reviewed first, then the lowest accession; `--keep-redundant`
+turns this off. A sanity floor of 100 sequences applies to the raw response (below that it is
+treated as truncated and aborts). The UreC tree outgroup — the reviewed UreC of *Klebsiella
+aerogenes* (P18314) and *Proteus mirabilis* (P17086) — goes to `data/urec_outgroup.fasta`, used
+only by the tree and kept out of BLASTp. The set is **live**: it tracks UniProt and changes with
+every release (on release 2026_03, 960 sequences after deduplication — 109 reviewed and 851
+unreviewed — out of 1,074 in the response). Reproducibility does not rest on a fixed accession
+list but on the provenance records written next to each FASTA
+(`data/urease_references.provenance.txt`, `data/urec_outgroup.provenance.txt` — release, date,
+counts and `sha256`). To pin a different slice, use `--query` or `--url`.
 
 ---
 
@@ -537,7 +581,9 @@ erDiagram
 | `layer_bakta` | Boolean | Detection flag for Layer A (Bakta) |
 | `layer_blast` | Boolean | Detection flag for Layer B (BLASTp) |
 | `layer_hmmer` | Boolean | Detection flag for Layer C (Pfam HMMER) |
-| `confidence` | String | Confidence level derived from the consensus (High, Medium, Low) |
+| `blast_ref_status` | String | Status of the reference behind the best BLASTp hit: `reviewed` (Swiss-Prot), `unreviewed` (TrEMBL) or `unknown` |
+| `evidence_points` | Integer | Evidence points (see [Candidate screening score](#candidate-screening-score)) |
+| `confidence` | String | Confidence derived from the points: `Alta/High`, `Media/Medium` or `Baixa/Low` |
 
 #### Table: `results/04_summary/urease_presence_absence.tsv`
 | Field | Type | Description |
@@ -553,3 +599,78 @@ erDiagram
 | `urtA` | Integer (0/1) | Presence (1) or absence (0) of the urea transporter UrtA |
 | `uc` | Integer (0/1) | Presence (1) or absence (0) of urea carboxylase |
 | `ah` | Integer (0/1) | Presence (1) or absence (0) of allophanate hydrolase |
+
+---
+
+## 10. Pipeline Decision Guide (Q&A)
+
+### Which databases, and why?
+
+Each database answers a different question, and candidate screening deliberately uses three
+independent sources: no single one (annotation, similarity or domain) is enough to claim a gene is
+present. A candidate is **High** confidence only when at least two layers agree.
+
+| Database | Step | Why |
+| :--- | :--- | :--- |
+| **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Public source of the 10 BAFES genomes. The study accessions are WGS masters (`VKHW00000000.1`), which hold no sequence; [download_genome.py](bin/download_genome.py) resolves them to the `GCA_`/`GCF_` assembly before downloading. |
+| **CheckM2** (`uniref100.KO.1.dmnd`) | `QC_CHECKM2` | Estimates completeness and contamination with a machine-learning model that does not depend on lineage-specific markers — a good fit for strains classified only as *Bacillus* sp. |
+| **Bakta DB full** | `BAKTA_ANNOTATE` | Standardised bacterial annotation. Its JSON carries gene, product, EC numbers and `db_xrefs`, which make up Layer A. The *full* DB (~75 GB) assigns more RefSeq/UniRef identifiers than *light*. It bundles AMRFinderPlus, an internal Bakta dependency — which is why it shows up in the version check. |
+| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Layer B (BLASTp) | Restricted to **Firmicutes** (`taxonomy_id:1239`), the BAFES phylum, which keeps identity high against the 30 % identity and 50 % coverage thresholds. For urease, **reviewed** entries only (Swiss-Prot), with curator-verified function. For UrtA–E, `uca` and `atzF` Swiss-Prot has no Firmicutes entry (and no UrtA–E in any organism), so TrEMBL entries come in, searched by exact gene name. The query is live, with release and `sha256` recorded in [urease_references.provenance.txt](data/urease_references.provenance.txt). |
+| **UniProtKB/Swiss-Prot** (outgroup) | `BUILD_PHYLOGENY` | Two Gammaproteobacteria UreC that root the UreC tree (see the species question). They live in [urec_outgroup.fasta](data/urec_outgroup.fasta), apart from the BLASTp references. |
+| **Pfam-A** | `EXTRACT_CANDIDATES`, Layer C (hmmscan) | HMM profiles catch remote homology that BLASTp misses and do not depend on Bakta's annotation. Only 10 profiles count as evidence (`UREASE_PFAM_ACCESSIONS` in [extract_urease_candidates.py](bin/extract_urease_candidates.py)). PF01979 (Amidohydro_1) and PF00005 (ABC_tran) are left out because they span whole superfamilies. |
+
+**Known limitation.** Pfam and Bakta come from rolling URLs: "the file exists" does not say which
+release is on disk. Reproducibility relies on the versions recorded in `db/.versions/` (see
+[Database Version Checking](#86-database-version-checking)).
+
+### What is the execution order, and why?
+
+Nextflow runs as a dataflow: the "order" is the chain of dependencies, and each strain moves on
+independently. The linear diagram in the [Pipeline Overview](#3-pipeline-overview) simplifies this.
+
+1. **`PREFLIGHT_CHECK`** — Tests NCBI, Pfam, Bakta and the references first, so a run fails in
+   seconds rather than after hours of annotation and hmmscan.
+2. **`DOWNLOAD_GENOME` / `STAGE_LOCAL_GENOME`** — Fetches and validates the FASTA (contigs,
+   >= 500 kb, alphabet). Without a real genome, the strain stops here.
+3. **`QC_QUAST` and `QC_CHECKM2`**, in parallel with **`BAKTA_ANNOTATE`** — QC is informative and
+   does **not** filter strains: the genome goes straight to Bakta. Running in parallel keeps QC
+   from delaying the longest step.
+4. **`BAKTA_ANNOTATE`** before screening — BLASTp and hmmscan run on the `.faa` that Bakta writes.
+   That way all three layers refer to the same locus tag, and consensus is computed by identifier.
+5. **`EXTRACT_CANDIDATES`** — BLASTp, hmmscan and the three-layer consolidation, per strain. This
+   is the pipeline's bottleneck (hmmscan against the whole of Pfam-A).
+6. **`MERGE_ALL_STRAINS`**, **`EXTRACT_LOCUS`** and **`BUILD_PHYLOGENY`** after screening — All
+   three consume the candidates: the matrix consolidates them, the locus slice anchors on them and
+   the phylogeny takes UreC from them, never from the whole proteome. They are independent of each
+   other.
+7. **`EXTRACT_LOCUS`** before **`ANALYZE_SYNTENY`** — clinker aligns every protein against every
+   other. With the 10 whole genomes (~46,500 CDS) that was ~10⁹ alignments and the step blew its 8 h
+   limit (exit 143). With the locus sliced out (±5 flanking genes), the step takes seconds.
+
+### Which reference species are used at each step, and why?
+
+| Step | Reference | Why |
+| :--- | :--- | :--- |
+| **Study genomes** | S1 *Lysinibacillus fusiformis*; S2–S10 *Bacillus* sp. (CBAFES/UnB collection). Optionally, local genomes via `--local-genomes` (e.g. SDF0008, SDF0018, SDF0030 in [local_genomes.tsv](data/local_genomes.tsv)). | They are the subjects of the study, not references. |
+| **QC** | None. | QUAST runs without `-r`: there is no suitable reference genome for strains with no species assigned. CheckM2 uses a universal model. |
+| **Annotation (Bakta)** | No species fixed (no `--genus`/`--species`). | Bakta's databases are universal; fixing a species would only change the name in the output. |
+| **Layer B (BLASTp), urease** | 109 Swiss-Prot proteins from 21 Firmicutes species, one per gene and species (release 2026_03): UreA 18, UreB 19, UreC 19, UreD 12, UreE 16, UreF 11, UreG 12, UreH 1, UreI 1. Among them *Sporosarcina pasteurii*, *Lysinibacillus sphaericus*, *Bacillus subtilis*, *B. cereus*, *B. velezensis*, *Geobacillus kaustophilus*, *Halalkalibacterium halodurans*, plus *Staphylococcus*, *Streptococcus* and clostridia. | Same phylum as the BAFES, with verified function. *S. pasteurii* is the model Firmicutes urease; *L. sphaericus* shares S1's genus; *Bacillus* and *Geobacillus* are close relatives of S2–S10. Deduplication took *S. aureus* from 94 entries down to 7 (one per gene). |
+| **Layer B (BLASTp), transport and alternative pathway** | 851 TrEMBL Firmicutes proteins, one per gene and species: UrtA 130, UrtB 139, UrtC 136, UrtD 137, UrtE 137 (141 species), `uca` 84 and `atzF` 88. Most represented genera: *Paenibacillus*, *Cohnella*, *Bacillus*, *Metabacillus*, *Geobacillus*. | They are the only Firmicutes carrying these genes in UniProt. `uca` and `atzF` are searched by gene name rather than EC number, because EC 3.5.1.54 also brings the KipI/KipA "allophanate hydrolases", which in *Bacillus* are the 5-oxoprolinase PxpB/PxpC. |
+| **Layer C (Pfam)** | No species. | Family profiles built from alignments spanning many taxa. |
+| **Synteny** | Study strains only. | The goal is to compare operon organisation across the isolates. A strain with no urease is left off the map, and no locus is invented for it. |
+| **UreC phylogeny** | The strains' UreC + 19 reference UreC, one per Firmicutes species (including *S. pasteurii*, *B. subtilis*, *B. cereus*, *B. velezensis*, *G. kaustophilus* and *H. halodurans*) + outgroup: the UreC of *Klebsiella aerogenes* (P18314) and *Proteus mirabilis* (P17086). | IQ-TREE needs >= 4 sequences for bootstrap, and the references place the strains within the phylum. The outgroup are Gammaproteobacteria model ureases with solved structures, clearly outside Firmicutes; IQ-TREE roots the tree on them (`-o`). Can be turned off with `--phylo_include_refs false` and `--phylo_outgroup false`. |
+
+**Known limitations.**
+
+- **Unreviewed references for transport and the alternative pathway.** UrtA–E, `uca` and `atzF`
+  come from TrEMBL, which is annotated automatically, like Bakta. For these genes a BLASTp hit
+  confirms similarity to proteins annotated the same way, not verified function. That is why such
+  a hit is flagged (`blast_ref_status = unreviewed`, outlined "L" badge in the report) and scores
+  nothing — see [Candidate screening score](#candidate-screening-score).
+- **Composition bias in transport.** *Paenibacillus* accounts for almost half of the UrtA–E
+  references, because it is the Firmicutes genus with the most genomes carrying the operon.
+- **Few species with reviewed urease.** Deduplication removed the *S. aureus* redundancy but adds
+  no species: Swiss-Prot holds reviewed urease from only 21 Firmicutes species.
+- **The presence/absence matrix reads Bakta only.** It uses the annotated gene and product; a
+  protein found only by BLASTp or Pfam changes the confidence in the candidate table but does not
+  mark presence in the matrix.

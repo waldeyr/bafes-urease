@@ -19,10 +19,20 @@ PT-BR: Sobre a contagem de taxons: o IQ-TREE recusa bootstrap com menos de 4 seq
        uma arvore nao-enraizada de 3 folhas tem uma unica topologia possivel. Por isso as
        sequencias de UreC de referencia (curadas, com proveniencia registrada) entram como
        contexto filogenetico, e ha uma guarda explicita para os casos degenerados.
+
+PT-BR: Sobre a raiz: sem grupo externo o IQ-TREE devolve uma arvore nao-enraizada, que so
+       diz quem agrupa com quem. Com --outgroup, as UreC desse FASTA (Gammaproteobacteria,
+       fora de Firmicutes) entram na arvore e o IQ-TREE a enraiza nelas (-o), o que da
+       direcao aos ramos das estirpes e das referencias.
 EN-US: On taxon counts: IQ-TREE refuses bootstrap with fewer than 4 sequences, and an
        unrooted 3-leaf tree has a single possible topology. Hence the reference UreC
        sequences (curated, with recorded provenance) enter as phylogenetic context, and
        there is an explicit guard for the degenerate cases.
+
+EN-US: On the root: without an outgroup IQ-TREE returns an unrooted tree, which only says
+       what clusters with what. With --outgroup, the UreC in that FASTA (Gammaproteobacteria,
+       outside Firmicutes) enter the tree and IQ-TREE roots it on them (-o), which gives the
+       strain and reference branches a direction.
 """
 
 import sys
@@ -130,6 +140,32 @@ def collect_reference_urec(references_fasta):
     return selected
 
 
+def collect_outgroup(outgroup_fasta):
+    """
+    PT-BR: Le o FASTA do grupo externo (mesmo formato de cabecalho das referencias). Toda
+           sequencia dele e grupo externo; um arquivo ausente ou vazio e erro, porque o
+           usuario pediu uma raiz e uma arvore sem ela passaria por enraizada.
+    EN-US: Reads the outgroup FASTA (same header format as the references). Every sequence
+           in it is outgroup; a missing or empty file is an error, because the user asked
+           for a root and a tree without one would pass for rooted.
+    """
+    if not (os.path.exists(outgroup_fasta) and os.path.getsize(outgroup_fasta) > 0):
+        return None
+    selected = []
+    for rid, (header, sequence) in sorted(read_fasta(outgroup_fasta).items()):
+        fields = header.split('|')
+        accession = fields[2].split(':')[-1].strip() if len(fields) >= 4 else rid
+        organism = fields[3].strip()[:MAX_ORGANISM_CHARS] if len(fields) >= 4 else ''
+        selected.append({
+            'label_seed': f"OUT_{accession}_{organism}" if organism else f"OUT_{accession}",
+            'source_id': rid,
+            'header': header,
+            'sequence': sequence,
+            'origin': 'grupo externo/outgroup',
+        })
+    return selected
+
+
 def sanitise(text, used):
     """
     PT-BR: O IQ-TREE trunca nomes em '|' e recusa nomes repetidos, entao os rotulos sao
@@ -174,6 +210,9 @@ def main():
     parser.add_argument("--references", default=None,
                         help="FASTA de referencia; suas sequencias de ureC entram como contexto "
                              "/ Reference FASTA; its ureC sequences enter as context")
+    parser.add_argument("--outgroup", default=None,
+                        help="FASTA do grupo externo; a arvore e enraizada nele "
+                             "/ Outgroup FASTA; the tree is rooted on it")
     parser.add_argument("--threads", type=int, default=1,
                         help="Threads para MAFFT e IQ-TREE / Threads for MAFFT and IQ-TREE")
     args = parser.parse_args()
@@ -234,9 +273,21 @@ def main():
             print(f"[AVISO/WARNING] Nenhuma sequencia de ureC encontrada em / No ureC sequence "
                   f"found in: {args.references}")
 
+    outgroup_count = 0
+    if args.outgroup:
+        outgroup = collect_outgroup(args.outgroup)
+        if not outgroup:
+            print(f"[ERRO/ERROR] Grupo externo ausente ou vazio / Outgroup missing or empty: "
+                  f"{args.outgroup}")
+            return 1
+        outgroup_count = len(outgroup)
+        print(f"Sequencias UreC do grupo externo / Outgroup UreC sequences: {outgroup_count}")
+        entries.extend(outgroup)
+
     total = len(entries)
-    composition = (f"{strain_count} de estirpe + {reference_count} de referencia "
-                   f"/ {strain_count} from strains + {reference_count} references")
+    composition = (f"{strain_count} de estirpe + {reference_count} de referencia + "
+                   f"{outgroup_count} de grupo externo / {strain_count} from strains + "
+                   f"{reference_count} references + {outgroup_count} outgroup")
 
     if total < MIN_TAXA_FOR_TREE:
         write_status(
@@ -253,10 +304,13 @@ def main():
     #        feature_id (or reference).
     used = set()
     mapping = []
+    outgroup_labels = []
     with open(urec_fasta, 'w', encoding='utf-8') as handle:
         for entry in entries:
             label = sanitise(entry['label_seed'], used)
             mapping.append((label, entry['origin'], entry['source_id'], entry['header']))
+            if entry['origin'] == 'grupo externo/outgroup':
+                outgroup_labels.append(label)
             handle.write(f">{label}\n")
             sequence = entry['sequence']
             for i in range(0, len(sequence), 60):
@@ -293,6 +347,15 @@ def main():
     bootstrap = total >= MIN_TAXA_FOR_BOOTSTRAP
     iqtree_cmd = ["iqtree", "-s", trim_out, "--prefix", tree_prefix, "-m", "MFP",
                   "-T", str(threads)]
+    # PT-BR: A lista inteira do grupo externo vai para o IQ-TREE, que enraiza o .treefile no
+    #        ramo que a separa do resto. Um grupo externo que seja a arvore toda (so ele, sem
+    #        estirpes nem referencias) nao enraiza nada, entao fica sem -o.
+    # EN-US: The whole outgroup list goes to IQ-TREE, which roots the .treefile on the branch
+    #        separating it from the rest. An outgroup that is the whole tree (only it, with no
+    #        strains or references) roots nothing, so it gets no -o.
+    rooted = bool(outgroup_labels) and len(outgroup_labels) < total
+    if rooted:
+        iqtree_cmd += ["-o", ",".join(outgroup_labels)]
     if bootstrap:
         iqtree_cmd += ["-bb", str(BOOTSTRAP_REPLICATES)]
     else:
@@ -308,11 +371,14 @@ def main():
         print(f"[ERRO/ERROR] IQ-TREE terminou sem gerar / finished without producing: {treefile}")
         return 1
 
+    root_note = (f" Enraizada no grupo externo / Rooted on the outgroup: {', '.join(outgroup_labels)}."
+                 if rooted else " Nao enraizada / Unrooted.")
+
     if bootstrap:
         write_status(
             f"ARVORE GERADA / TREE BUILT: {total} taxons UreC ({composition}), "
             f"{BOOTSTRAP_REPLICATES} ultrafast bootstraps. / {total} UreC taxa, "
-            f"{BOOTSTRAP_REPLICATES} ultrafast bootstraps. Arquivo / File: {treefile}"
+            f"{BOOTSTRAP_REPLICATES} ultrafast bootstraps. Arquivo / File: {treefile}.{root_note}"
         )
     else:
         write_status(
@@ -321,7 +387,7 @@ def main():
             f"{MIN_TAXA_FOR_TREE} existe uma unica topologia nao-enraizada possivel. "
             f"/ below {MIN_TAXA_FOR_BOOTSTRAP} taxa bootstrap does not apply, and with "
             f"{MIN_TAXA_FOR_TREE} there is a single possible unrooted topology. "
-            f"Arquivo / File: {treefile}"
+            f"Arquivo / File: {treefile}.{root_note}"
         )
     return 0
 

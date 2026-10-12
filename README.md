@@ -69,7 +69,7 @@ interrompida, caminhos alternativos, execução sem container) estão em
 - **Aquisição Automática do NCBI**: Download direto dos assemblies FASTA via NCBI Datasets CLI com fallback automático para NCBI Entrez E-utilities.
 - **Controle de Qualidade Genômico (QC)**: Avaliação estatística de contiguidade com QUAST (N50, L50, GC%) e completude/contaminação com CheckM2.
 - **Anotação Genômica Estrutural e Funcional**: Anotação com Bakta v1.9+ gerando saídas estruturadas JSON, GFF3, FAA e GBFF.
-- **Triagem Trifásica de Candidatos**: Consolidação por consenso integrando anotação Bakta (Layer A), BLASTp contra referências curadas (Layer B) e busca de domínios Pfam com HMMER3 (Layer C).
+- **Triagem Trifásica de Candidatos**: Consolidação por consenso integrando anotação Bakta (Layer A), BLASTp contra referências do UniProt (Layer B) e busca de domínios Pfam com HMMER3 (Layer C).
 - **Matriz de Presença/Ausência**: Construção automatizada da tabela `urease_presence_absence.tsv` e sumário unificado entre as 10 estirpes.
 - **Análise de Vizinhança Gênica (Sintenia)**: Extração da janela genômica de $\pm 10$ kb em torno de $ureC$ e geração de mapa interativo HTML com `clinker`.
 - **Reconstrução Filogenética de UreC**: Alinhamento múltiplo com MAFFT, filtragem de posições conservadas com trimAl e inferência de árvore por Máxima Verossimilhança com IQ-TREE 2.
@@ -138,11 +138,47 @@ graph TD
 | **Download de Genomas** | `genbank_accession` em `data/accessions.tsv` | `results/00_genomes/{strain}.fna` | Resolve o accession WGS master para o assembly (GCA_/GCF_) e baixa via NCBI Datasets CLI, com fallback para o FTP do assembly. Valida contigs, número de bases e alfabeto. **Falha se o genoma real não for obtido.** |
 | **QC de Genomas** | FASTA do genoma baixado | `results/01_qc/quast/` e `checkm2/` | QUAST calcula N50, GC% e comprimento total; CheckM2 estima completude/contaminação a partir do banco baixado no bootstrap. |
 | **Anotação com Bakta** | FASTA do genoma + `--bakta_db` | `results/02_bakta/{strain}/` (.json, .gff3, .faa, .gbff) | Atribui identificadores RefSeq/UniRef, termos EC (3.5.1.5, 6.3.4.6, 3.5.1.54) e símbolos gênicos. |
-| **Triagem de Candidatos** | Bakta JSON, `urease_references.fasta`, `Pfam-A.hmm` | `results/03_candidates/{strain}_candidates.tsv` | Classifica a evidência em 3 camadas: Bakta (A), BLASTp (B, E-value <= 1e-5 + identidade >= 30% + cobertura >= 50%) e HMMER (C, score de domínio >= 20). Confiança Alta (>=2 camadas), Média (1 camada). |
+| **Triagem de Candidatos** | Bakta JSON, `urease_references.fasta`, `Pfam-A.hmm` | `results/03_candidates/{strain}_candidates.tsv` | Classifica a evidência em 3 camadas: Bakta (A), BLASTp (B, E-value <= 1e-5 + identidade >= 30% + cobertura >= 50%) e HMMER (C, score de domínio >= 20). Confiança pela [pontuação](#pontuação-da-triagem-de-candidatos): Alta (>= 2 pontos), Média (1), Baixa (só BLASTp contra TrEMBL). |
 | **Consolidação de Matriz** | Candidatos TSV de todas as estirpes | `results/04_summary/urease_presence_absence.tsv` | Cria matriz binária (0/1) para os 10 genes alvos ($ureA-G$, $urtA$, $uc$, $ah$) por estirpe. |
 | **Análise de Sintenia** | Arquivos GBFF das estirpes | `results/05_synteny/synteny.html` | Executa clinker sobre os GenBank anotados (exige >= 2 genomas). Falha explicitamente se não houver GenBank ou se o clinker falhar — nenhum HTML de placeholder é escrito. |
-| **Filogenia de UreC** | UreC selecionado a partir dos TSVs de candidatos | `results/06_phylogeny/ureC.treefile`, `ureC_labels.tsv`, `phylogeny_status.txt` | Usa **apenas** as sequências de UreC identificadas na triagem, não o proteoma inteiro. Exige >= 3 UreC; abaixo disso registra o motivo em `phylogeny_status.txt` e não gera árvore. MAFFT -> trimAl `automated1` -> IQ-TREE 2 (`-m MFP`, 1000 ultrafast bootstraps). |
+| **Filogenia de UreC** | UreC selecionado a partir dos TSVs de candidatos | `results/06_phylogeny/ureC.treefile`, `ureC_labels.tsv`, `phylogeny_status.txt` | Usa **apenas** as sequências de UreC identificadas na triagem, não o proteoma inteiro, mais as UreC de referência e o grupo externo (`data/urec_outgroup.fasta`). Exige >= 3 UreC; abaixo disso registra o motivo em `phylogeny_status.txt` e não gera árvore. MAFFT -> trimAl `automated1` -> IQ-TREE 2 (`-m MFP`, 1000 ultrafast bootstraps, enraizada no grupo externo com `-o`). |
 | **Acompanhamento tqdm** | Execução via `run.sh --exec` | Terminal UI com barras interativas | Renderiza o percentual de conclusão por fase e progresso global. |
+
+### Pontuação da triagem de candidatos
+
+Cada camada vale 1 ponto, com uma exceção: o BLASTp cujo **melhor acerto** é uma referência do
+TrEMBL (não revisada) é registrado, mas não pontua. A anotação do TrEMBL é automática, como a do
+Bakta, então concordar com ela não é evidência independente. O status do melhor acerto fica na
+coluna `blast_ref_status`, e os pontos em `evidence_points`.
+
+| Evidência | Pontos |
+| :--- | :--- |
+| Camada A — Bakta: gene alvo, número EC ou produto | 1 |
+| Camada B — BLASTp com melhor acerto em referência revisada (Swiss-Prot) | 1 |
+| Camada B — BLASTp com melhor acerto em referência não revisada (TrEMBL) | 0 (registrado) |
+| Camada C — HMMER: perfil Pfam da lista, score de domínio >= 20 | 1 |
+
+| Pontos | Confiança |
+| :--- | :--- |
+| >= 2 | Alta |
+| 1 | Média |
+| 0, com BLASTp contra TrEMBL | Baixa |
+
+| Exemplo | Pontos | Confiança |
+| :--- | :--- | :--- |
+| Bakta + BLASTp (Swiss-Prot) + HMMER | 3 | Alta |
+| Bakta + BLASTp (Swiss-Prot) | 2 | Alta |
+| Bakta + HMMER + BLASTp (TrEMBL) | 2 | Alta |
+| Bakta + BLASTp (TrEMBL) | 1 | Média |
+| HMMER + BLASTp (TrEMBL) | 1 | Média |
+| Só Bakta, ou só HMMER | 1 | Média |
+| Só BLASTp (TrEMBL) | 0 | Baixa |
+
+Hoje só UrtA–E, `uca` e `atzF` vêm do TrEMBL. UrtA–E e `atzF` não têm perfil na lista da Camada
+C, então na prática chegam no máximo a Média. A urea carboxilase (`uca`) carrega o domínio CT_C_D
+(PF02682), que está na lista, e por isso ainda alcança Alta com Bakta + HMMER. Um FASTA de referências próprio (`--references`)
+cujo cabeçalho não siga o formato `ref|gene|UniProt:acesso|organismo|status|Naa` recebe status
+`unknown` e pontua como revisado.
 
 ---
 
@@ -161,10 +197,11 @@ substituir a saída por um valor plausível. Em particular:
   completude/contaminação escritos no código.
 - **Anotação.** Sem o banco do Bakta, [BAKTA_ANNOTATE](main.nf) falha. Não há anotação
   substituta com genes inventados.
-- **Referências.** As sequências de [urease_references.fasta](data/urease_references.fasta) são
-  baixadas do UniProt por uma consulta REST: proteínas de urease (`protein_name:urease`) de
-  Firmicutes (`taxonomy_id:1239`) revisadas (Swiss-Prot). Nada é sintetizado localmente — falha
-  de rede, resposta truncada ou conjunto vazio abortam sem escrever o FASTA. Regenere com:
+- **Referências.** As sequências de [urease_references.fasta](data/urease_references.fasta) e do
+  grupo externo [urec_outgroup.fasta](data/urec_outgroup.fasta) são baixadas do UniProt por
+  consulta REST (detalhes em [Conjunto de referências](#conjunto-de-referências)). Nada é
+  sintetizado localmente — falha de rede, resposta truncada ou conjunto vazio abortam sem
+  escrever nenhum dos dois arquivos. Regenere com:
   ```bash
   python3 bin/fetch_references.py
   ```
@@ -176,15 +213,18 @@ substituir a saída por um valor plausível. Em particular:
 
 | Item | Valor |
 | :--- | :--- |
-| Consulta | `(protein_name:urease) AND (taxonomy_id:1239) AND (reviewed:true)` |
+| Consulta | `(taxonomy_id:1239) AND (((protein_name:urease) AND (reviewed:true)) OR (gene_exact:urtA OR … OR gene_exact:urtE OR gene_exact:uca OR gene_exact:atzF))` |
 | Endpoint | `https://rest.uniprot.org/uniprotkb/stream` (FASTA comprimido) |
-| Escopo | Proteínas de urease (por `protein_name`) de Firmicutes, revisadas (Swiss-Prot) |
-| Piso de sanidade | 100 sequências; abaixo disso a resposta é tratada como truncada e aborta |
-| Procedência | `data/urease_references.provenance.txt` — release, data, contagem e `sha256` |
+| Escopo | Firmicutes. Urease (UreA–I): só revisadas (Swiss-Prot). Transporte (UrtA–E), urea carboxilase (`uca`) e alofanato hidrolase (`atzF`): revisadas ou não (TrEMBL) |
+| Redundância | Uma sequência por gene e espécie; a revisada tem preferência, depois a menor acessão (`--keep-redundant` desliga) |
+| Piso de sanidade | 100 sequências na resposta bruta; abaixo disso ela é tratada como truncada e aborta |
+| Grupo externo | UreC revisadas de *Klebsiella aerogenes* (P18314) e *Proteus mirabilis* (P17086), em `data/urec_outgroup.fasta` — só para a árvore, fora do BLASTp |
+| Procedência | `data/urease_references.provenance.txt` e `data/urec_outgroup.provenance.txt` — release, data, contagens e `sha256` |
 
-O conjunto é **vivo**: acompanha o UniProt e muda a cada release (na release 2026_02 são 218
-sequências). A reprodutibilidade não vem de uma lista fixa de accessions, e sim do registro de
-procedência gravado ao lado do FASTA. Para fixar um recorte diferente, use `--query` ou `--url`:
+O conjunto é **vivo**: acompanha o UniProt e muda a cada release (na release 2026_03 são 960
+sequências após a deduplicação — 109 revisadas e 851 não revisadas — de 1.074 na resposta). A
+reprodutibilidade não vem de uma lista fixa de accessions, e sim do registro de procedência
+gravado ao lado do FASTA. Para fixar um recorte diferente, use `--query` ou `--url`:
 
 ```bash
 python3 bin/fetch_references.py --query '(urease AND (taxonomy_id:1386)) AND (reviewed:true)'
@@ -541,7 +581,9 @@ erDiagram
 | `layer_bakta` | Boolean | Sinalização de detecção na Camada A (Bakta) |
 | `layer_blast` | Boolean | Sinalização de detecção na Camada B (BLASTp) |
 | `layer_hmmer` | Boolean | Sinalização de detecção na Camada C (Pfam HMMER) |
-| `confidence` | String | Grau de confiança derivado do consenso (Alta, Media, Baixa) |
+| `blast_ref_status` | String | Status da referência do melhor acerto de BLASTp: `reviewed` (Swiss-Prot), `unreviewed` (TrEMBL) ou `unknown` |
+| `evidence_points` | Integer | Pontos de evidência (ver [Pontuação da triagem de candidatos](#pontuação-da-triagem-de-candidatos)) |
+| `confidence` | String | Confiança derivada dos pontos: `Alta/High`, `Media/Medium` ou `Baixa/Low` |
 
 #### Tabela: `results/04_summary/urease_presence_absence.tsv`
 | Campo | Tipo | Descrição |
@@ -557,3 +599,77 @@ erDiagram
 | `urtA` | Integer (0/1) | Presença (1) ou ausência (0) do transportador de ureia UrtA |
 | `uc` | Integer (0/1) | Presença (1) ou ausência (0) da urea carboxilase |
 | `ah` | Integer (0/1) | Presença (1) ou ausência (0) da alofanato hidrolase |
+
+---
+
+## Guia de decisões sobre o pipeline
+
+### Qual banco de dados e por quê?
+
+Cada banco responde a uma pergunta diferente, e a triagem de candidatos usa três fontes
+independentes de propósito: uma só (anotação, similaridade ou domínio) não basta para afirmar
+presença. Um candidato só é de confiança **Alta** quando pelo menos duas camadas concordam.
+
+| Banco | Etapa | Por quê |
+| :--- | :--- | :--- |
+| **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Fonte pública dos 10 genomas BAFES. Os accessions do estudo são WGS master (`VKHW00000000.1`), que não têm sequência; o [download_genome.py](bin/download_genome.py) os resolve para o assembly `GCA_`/`GCF_` antes de baixar. |
+| **CheckM2** (`uniref100.KO.1.dmnd`) | `QC_CHECKM2` | Estima completude e contaminação com um modelo de aprendizado de máquina, sem depender de marcadores específicos de linhagem — adequado a estirpes classificadas só como *Bacillus* sp. |
+| **Bakta DB full** | `BAKTA_ANNOTATE` | Anotação bacteriana padronizada. O JSON traz gene, produto, termos EC e `db_xrefs`, que formam a Camada A. A versão *full* (~75 GB) atribui mais identificadores RefSeq/UniRef que a *light*. Inclui o AMRFinderPlus, dependência interna do Bakta — por isso ele aparece na verificação de versões. |
+| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Camada B (BLASTp) | Restrito a **Firmicutes** (`taxonomy_id:1239`), o filo das BAFES, o que mantém a identidade alta frente aos limiares de 30 % de identidade e 50 % de cobertura. Para a urease, só entradas **revisadas** (Swiss-Prot), com função verificada por curadoria. Para UrtA–E, `uca` e `atzF` o Swiss-Prot não tem nenhuma entrada de Firmicutes (e nenhuma UrtA–E em organismo algum), então entram as do TrEMBL, buscadas por nome exato de gene. A consulta é viva, com release e `sha256` registrados em [urease_references.provenance.txt](data/urease_references.provenance.txt). |
+| **UniProtKB/Swiss-Prot** (grupo externo) | `BUILD_PHYLOGENY` | Duas UreC de Gammaproteobacteria que enraízam a árvore de UreC (ver a pergunta sobre espécies). Ficam em [urec_outgroup.fasta](data/urec_outgroup.fasta), separadas das referências do BLASTp. |
+| **Pfam-A** | `EXTRACT_CANDIDATES`, Camada C (hmmscan) | Perfis HMM detectam homologia remota que o BLASTp perde e não dependem da anotação do Bakta. Só 10 perfis contam como evidência (`UREASE_PFAM_ACCESSIONS` em [extract_urease_candidates.py](bin/extract_urease_candidates.py)). PF01979 (Amidohydro_1) e PF00005 (ABC_tran) ficam de fora por cobrirem superfamílias inteiras. |
+
+**Limitação conhecida.** Pfam e Bakta vêm de URLs rolantes: "o arquivo existe" não diz qual
+release está no disco. A reprodutibilidade depende das versões gravadas em `db/.versions/` (ver
+[Verificação de versão dos bancos](#6-verificação-de-versão-dos-bancos)).
+
+### Qual a ordem de execução e por quê?
+
+O Nextflow executa por fluxo de dados: a "ordem" é a cadeia de dependências, e cada estirpe
+avança de forma independente. O diagrama linear da [Arquitetura](#arquitetura) simplifica isso.
+
+1. **`PREFLIGHT_CHECK`** — Testa NCBI, Pfam, Bakta e as referências antes de tudo, para falhar em
+   segundos em vez de depois de horas de anotação e hmmscan.
+2. **`DOWNLOAD_GENOME` / `STAGE_LOCAL_GENOME`** — Obtém e valida o FASTA (contigs, >= 500 kb,
+   alfabeto). Sem genoma real, a estirpe para aqui.
+3. **`QC_QUAST` e `QC_CHECKM2`**, em paralelo com **`BAKTA_ANNOTATE`** — O QC é informativo e
+   **não filtra** estirpes: o genoma vai direto para o Bakta. Rodar em paralelo evita que o QC
+   atrase a etapa mais longa.
+4. **`BAKTA_ANNOTATE`** antes da triagem — O BLASTp e o hmmscan rodam sobre o `.faa` gerado pelo
+   Bakta. Assim as três camadas falam do mesmo locus tag, e o consenso é feito por identificador.
+5. **`EXTRACT_CANDIDATES`** — BLASTp, hmmscan e consolidação das três camadas por estirpe. É o
+   gargalo do pipeline (hmmscan contra o Pfam-A inteiro).
+6. **`MERGE_ALL_STRAINS`**, **`EXTRACT_LOCUS`** e **`BUILD_PHYLOGENY`** depois da triagem — As
+   três consomem os candidatos: a matriz os consolida, o recorte do locus ancora neles e a filogenia
+   seleciona o UreC deles, nunca do proteoma inteiro. São independentes entre si.
+7. **`EXTRACT_LOCUS`** antes de **`ANALYZE_SYNTENY`** — O clinker alinha todas as proteínas contra
+   todas. Com os 10 genomas inteiros (~46.500 CDS) eram ~10⁹ alinhamentos e a etapa estourou as 8 h
+   (exit 143). Recortado o locus (±5 genes flanqueadores), a etapa leva segundos.
+
+### Quais espécies de referência em cada etapa e por quê?
+
+| Etapa | Referência | Por quê |
+| :--- | :--- | :--- |
+| **Genomas do estudo** | S1 *Lysinibacillus fusiformis*; S2–S10 *Bacillus* sp. (coleção CBAFES/UnB). Opcionalmente, genomas locais via `--local-genomes` (ex.: SDF0008, SDF0018, SDF0030 em [local_genomes.tsv](data/local_genomes.tsv)). | São os objetos do estudo, não referências. |
+| **QC** | Nenhuma. | O QUAST roda sem `-r`: não há genoma de referência adequado para estirpes sem espécie definida. O CheckM2 usa um modelo universal. |
+| **Anotação (Bakta)** | Nenhuma espécie fixada (sem `--genus`/`--species`). | Os bancos do Bakta são universais; fixar espécie só mudaria o nome na saída. |
+| **Camada B (BLASTp), urease** | 109 proteínas Swiss-Prot de 21 espécies de Firmicutes, uma por gene e espécie (release 2026_03): UreA 18, UreB 19, UreC 19, UreD 12, UreE 16, UreF 11, UreG 12, UreH 1, UreI 1. Entre elas *Sporosarcina pasteurii*, *Lysinibacillus sphaericus*, *Bacillus subtilis*, *B. cereus*, *B. velezensis*, *Geobacillus kaustophilus*, *Halalkalibacterium halodurans*, além de *Staphylococcus*, *Streptococcus* e clostrídios. | Mesmo filo das BAFES, com função verificada. *S. pasteurii* é a urease-modelo de Firmicutes; *L. sphaericus* é do mesmo gênero de S1; *Bacillus* e *Geobacillus* são parentes próximos das estirpes S2–S10. A deduplicação levou *S. aureus* de 94 para 7 entradas (uma por gene). |
+| **Camada B (BLASTp), transporte e via alternativa** | 851 proteínas TrEMBL de Firmicutes, uma por gene e espécie: UrtA 130, UrtB 139, UrtC 136, UrtD 137, UrtE 137 (141 espécies), `uca` 84 e `atzF` 88. Gêneros mais representados: *Paenibacillus*, *Cohnella*, *Bacillus*, *Metabacillus*, *Geobacillus*. | São os únicos Firmicutes com esses genes no UniProt. `uca` e `atzF` são buscados pelo nome do gene, e não pelo EC, porque o EC 3.5.1.54 também traz as "alofanato hidrolases" KipI/KipA, que em *Bacillus* são a 5-oxoprolinase PxpB/PxpC. |
+| **Camada C (Pfam)** | Nenhuma espécie. | Perfis de família construídos a partir de alinhamentos de muitos táxons. |
+| **Sintenia** | Só as estirpes do estudo. | O objetivo é comparar a organização do operon entre os isolados. Estirpe sem urease fica fora do mapa, e nenhum locus é inventado para ela. |
+| **Filogenia de UreC** | UreC das estirpes + 19 UreC de referência, uma por espécie de Firmicutes (incluindo *S. pasteurii*, *B. subtilis*, *B. cereus*, *B. velezensis*, *G. kaustophilus* e *H. halodurans*) + grupo externo: UreC de *Klebsiella aerogenes* (P18314) e *Proteus mirabilis* (P17086). | O IQ-TREE exige >= 4 sequências para bootstrap, e as referências situam as estirpes no filo. O grupo externo são ureases-modelo de Gammaproteobacteria, com estrutura resolvida e claramente fora de Firmicutes; o IQ-TREE enraíza a árvore nelas (`-o`). Desligáveis com `--phylo_include_refs false` e `--phylo_outgroup false`. |
+
+**Limitações conhecidas.**
+
+- **Referências não revisadas para transporte e via alternativa.** UrtA–E, `uca` e `atzF` vêm do
+  TrEMBL, anotado automaticamente como o Bakta. Para esses genes um acerto de BLASTp confirma
+  similaridade com proteínas anotadas da mesma forma, não função verificada. Por isso esse acerto
+  fica marcado (`blast_ref_status = unreviewed`, selo "L" vazado no relatório) e não pontua — ver
+  [Pontuação da triagem de candidatos](#pontuação-da-triagem-de-candidatos).
+- **Viés de composição do transporte.** *Paenibacillus* responde por quase metade das
+  referências UrtA–E, porque é o gênero de Firmicutes com mais genomas que trazem o operon.
+- **Poucas espécies com urease revisada.** A deduplicação removeu a redundância de *S. aureus*,
+  mas não acrescenta espécies: o Swiss-Prot só tem urease revisada de 21 espécies de Firmicutes.
+- **A matriz de presença/ausência só lê o Bakta.** Ela usa o gene e o produto anotados; uma
+  proteína achada só pelo BLASTp ou pelo Pfam muda a confiança na tabela de candidatos, mas não
+  marca presença na matriz.

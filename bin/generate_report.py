@@ -242,7 +242,12 @@ def split_bilingual(value):
     if not value or '/' not in str(value):
         return value
     parts = str(value).split('/')
-    if len(parts) == 2 and all(p and ' ' not in p for p in parts):
+    # PT-BR: O lado PT pode ter duas palavras ('grupo externo/outgroup'); frases inteiras,
+    #        separadas por ' / ', continuam recusadas pelo espaço no lado EN.
+    # EN-US: The PT side may hold two words ('grupo externo/outgroup'); whole sentences,
+    #        separated by ' / ', are still refused by the space on the EN side.
+    if (len(parts) == 2 and parts[0] and parts[1] and ' ' not in parts[1]
+            and parts[0].count(' ') <= 1 and not parts[0].endswith(' ')):
         return (pt_display(parts[0]), parts[1])
     return value
 
@@ -474,11 +479,12 @@ def parse_reference_id(sseqid):
     EN-US: same, split into gene / accession / organism / length.
     """
     parts = str(sseqid).split('|')
-    info = {'gene': '', 'uniprot': '', 'organism': str(sseqid), 'length': ''}
+    info = {'gene': '', 'uniprot': '', 'organism': str(sseqid), 'length': '', 'status': ''}
     if len(parts) >= 6 and parts[0] == 'ref':
         info['gene'] = parts[1]
         info['uniprot'] = parts[2].replace('UniProt:', '')
         info['organism'] = parts[3].replace('_', ' ')
+        info['status'] = parts[4]
         info['length'] = parts[5]
     return info
 
@@ -1155,7 +1161,8 @@ def phylogram(root, leaf_meta, width=980, leaf_step=18):
         else:
             meta = leaf_meta.get(node['name'], {})
             is_strain = meta.get('origin') == 'strain'
-            fill = 'var(--series-1)' if is_strain else 'var(--muted)'
+            fill = ('var(--series-1)' if is_strain else
+                    'var(--series-2)' if meta.get('origin') == 'outgroup' else 'var(--muted)')
             out.append(svg_line(px(node['x']), py(node['y']), px(max_x) + 6, py(node['y']),
                                 'var(--grid)', 1, dash='1 3'))
             out.append(svg_circle(px(node['x']), py(node['y']), 4 if is_strain else 2.5, fill,
@@ -1554,10 +1561,10 @@ def section_flow(ctx):
                     ('var(--flow-input)', ('entrada do usuário', 'user input'))])
     body += ('<p class="note">%s</p>'
              % T(('Cada caixa é um processo do main.nf; clique para ir a seção correspondente. '
-                  'As bases de dados (Pfam-A, banco do Bakta v6.0 e as referências curadas do UniProt) '
+                  'As bases de dados (Pfam-A, banco do Bakta v6.0 e as referências do UniProt) '
                   'entram nos processos que as consomem e estão detalhadas em Entrada e proveniência.',
                   'Each box is a main.nf process; click to jump to the matching section. '
-                  'The databases (Pfam-A, the Bakta v6.0 database and the curated UniProt references) '
+                  'The databases (Pfam-A, the Bakta v6.0 database and the UniProt references) '
                   'feed the processes that consume them and are detailed under Input and provenance.')))
     return card(('Do acesso GenBank a árvore de UreC', 'From GenBank accession to the UreC tree'),
                 body,
@@ -1637,8 +1644,10 @@ def section_input(ctx):
     pre_body.append('</ul>')
     success = '[SUCESSO/SUCCESS]' in ctx['preflight']
     pre_body.append('<p class="note">%s %s</p>'
-                    % (T(('Referências curadas do UniProt (Firmicutes, revisadas):',
-                          'Curated UniProt references (Firmicutes, reviewed):')),
+                    % (T(('Referências do UniProt (Firmicutes; urease revisada, urt/uca/atzF '
+                          'não revisadas; 1 por gene e espécie):',
+                          'UniProt references (Firmicutes; reviewed urease, unreviewed '
+                          'urt/uca/atzF; 1 per gene and species):')),
                        num(ctx['references_count'])))
     if success:
         pre_body.append('<p class="ok-line"><span class="dot ok"></span>%s</p>'
@@ -1807,7 +1816,8 @@ def section_annotation(ctx):
 
 
 def section_screening(ctx):
-    proteins = sum(s.get('proteins', 0) for s in ctx['strains'].values())
+    strains = ctx['strains']
+    proteins = sum(s.get('proteins', 0) for s in strains.values())
     blast_queries = len(ctx['blast'])
     candidates = ctx['candidates']
     bakta_layer = sum(1 for r in candidates if r.get('layer_bakta') == 'True')
@@ -1826,7 +1836,7 @@ def section_screening(ctx):
         {'value': len(candidates), 'label': ('Candidatos retidos', 'Retained candidates'),
          'note': ('união das três camadas de evidência', 'union of the three evidence layers')},
         {'value': high, 'label': ('Alta confiança', 'High confidence'),
-         'note': ('duas ou mais camadas concordantes', 'two or more agreeing layers')},
+         'note': ('dois ou mais pontos de evidência', 'two or more evidence points')},
     ]
     funnel = funnel_chart(stages)
     funnel += ('<p class="note">%s</p>' % T((
@@ -1860,27 +1870,42 @@ def section_screening(ctx):
         'proteins before the identity and coverage thresholds.'
         % (num(len(candidates)), num(ctx['blast_total']), num(blast_queries)))))
 
+    # PT-BR: O BLASTp contra TrEMBL é uma combinação à parte e a cor segue a confiança gravada
+    #        no TSV, não a contagem de camadas: Bakta + BLASTp (TrEMBL) são 2 camadas e 1 ponto.
+    # EN-US: BLASTp against TrEMBL is a combination of its own and the colour follows the
+    #        confidence stored in the TSV, not the layer count: Bakta + BLASTp (TrEMBL) are 2
+    #        layers and 1 point.
     combos = Counter()
+    combo_conf = {}
     for row in candidates:
-        key = (row.get('layer_bakta') == 'True', row.get('layer_blast') == 'True',
-               row.get('layer_hmmer') == 'True')
-        combos[key] += 1
-    combo_items = []
-    for key, count in combos.most_common():
-        names = []
-        for flag, name in zip(key, ('Bakta', 'BLASTp', 'HMMER')):
-            if flag:
-                names.append(name)
+        blast_name = 'BLASTp (TrEMBL)' if is_trembl_blast(row) else 'BLASTp'
+        names = [name for flag, name in ((row.get('layer_bakta') == 'True', 'Bakta'),
+                                         (row.get('layer_blast') == 'True', blast_name),
+                                         (row.get('layer_hmmer') == 'True', 'HMMER')) if flag]
         joined = ' + '.join(names) if names else '-'
+        combos[joined] += 1
+        combo_conf[joined] = confidence_class(row.get('confidence', ''))
+    colours = {'high': 'var(--series-1)', 'medium': 'var(--gene-other)', 'low': 'var(--warning)'}
+    combo_items = []
+    for joined, count in combos.most_common():
         combo_items.append({
             'value': count,
             'label': joined,
-            'colour': 'var(--series-1)' if sum(key) >= 2 else 'var(--gene-other)',
+            'colour': colours[combo_conf[joined]],
             'title': '%s: %s %s' % (joined, count, plain(('candidatos', 'candidates'))),
         })
-    combo = hbar_chart(combo_items, ('candidatos', 'candidates'), label_width=170)
-    combo += legend([('var(--series-1)', ('alta confiança (≥ 2 camadas)', 'high confidence (≥ 2 layers)')),
-                     ('var(--gene-other)', ('confiança média (1 camada)', 'medium confidence (1 layer)'))])
+    combo = hbar_chart(combo_items, ('candidatos', 'candidates'), label_width=230)
+    combo += legend([('var(--series-1)', ('alta confiança (≥ 2 pontos)', 'high confidence (≥ 2 points)')),
+                     ('var(--gene-other)', ('confiança média (1 ponto)', 'medium confidence (1 point)')),
+                     ('var(--warning)', ('confiança baixa (só BLASTp contra TrEMBL)',
+                                         'low confidence (BLASTp against TrEMBL only)'))])
+    combo += ('<p class="note">%s</p>' % T((
+        'Cada camada vale 1 ponto, exceto o BLASTp cujo melhor acerto é uma referência TrEMBL '
+        '(não revisada): ele é registrado, mas vale 0, porque essa anotação é automática como a '
+        'do Bakta e não é evidência independente.',
+        'Each layer is worth 1 point, except a BLASTp whose best hit is a TrEMBL (unreviewed) '
+        'reference: it is recorded but worth 0, because that annotation is automatic like '
+        'Bakta\'s and is not independent evidence.')))
 
     criteria = ('<div class="criteria">'
                 '<div><h4>%s</h4><p>%s</p></div>'
@@ -1892,10 +1917,10 @@ def section_screening(ctx):
            'Gene symbol in the target list (ureA–ureH, urtA, uc, ah), EC number 3.5.1.5 / '
            '6.3.4.6 / 3.5.1.54, or product containing urease, urea or allophanate.')),
         T(('Camada 2 · BLASTp', 'Layer 2 · BLASTp')),
-        T(('Alinhamento contra as referências curadas do UniProt com E ≤ 1e-5, identidade '
-           '≥ 30% e cobertura da consulta ≥ 50%.',
-           'Alignment against the curated UniProt references with E ≤ 1e-5, identity '
-           '≥ 30% and query coverage ≥ 50%.')),
+        T(('Alinhamento contra as referências do UniProt com E ≤ 1e-5, identidade '
+           '≥ 30% e cobertura da consulta ≥ 50%. Só pontua se o melhor acerto for Swiss-Prot.',
+           'Alignment against the UniProt references with E ≤ 1e-5, identity '
+           '≥ 30% and query coverage ≥ 50%. It scores only when the best hit is Swiss-Prot.')),
         T(('Camada 3 · HMMER', 'Layer 3 · HMMER')),
         T(('hmmscan contra o Pfam-A completo, retendo apenas domínios com score ≥ 20 cujo '
            'perfil esta na lista curada de dez acessos da via da urease.',
@@ -1904,8 +1929,8 @@ def section_screening(ctx):
 
     return (card(('Como um genoma inteiro vira dezesseis proteínas',
                   'How a whole genome becomes sixteen proteins'), criteria,
-                 ('Três critérios independentes; a confiança é alta quando pelo menos dois concordam.',
-                  'Three independent criteria; confidence is high when at least two agree.'))
+                 ('Três critérios independentes; a confiança é alta com pelo menos dois pontos.',
+                  'Three independent criteria; confidence is high with at least two points.'))
             + card(('Funil da triagem', 'Screening funnel'), funnel)
             + card(('Rendimento de cada camada, isoladamente',
                     'Yield of each layer, on its own'), lanes)
@@ -1975,14 +2000,32 @@ def section_matrix(ctx):
             + card(('Tabela da matriz', 'Matrix table'), tbl))
 
 
+def is_trembl_blast(row):
+    """PT-BR: BLASTp cujo melhor acerto é TrEMBL (não pontua). EN-US: BLASTp whose best hit is TrEMBL (scores nothing)."""
+    return row.get('layer_blast') == 'True' and row.get('blast_ref_status') == 'unreviewed'
+
+
 def layer_badges(row):
     out = []
     for field, name in (('layer_bakta', 'B'), ('layer_blast', 'L'), ('layer_hmmer', 'H')):
         on = row.get(field) == 'True'
-        out.append('<span class="badge %s" title="%s">%s</span>'
-                   % ('on' if on else 'off',
-                      esc({'B': 'Bakta', 'L': 'BLASTp', 'H': 'HMMER'}[name]), name))
+        state = 'on' if on else 'off'
+        title = {'B': 'Bakta', 'L': 'BLASTp', 'H': 'HMMER'}[name]
+        if name == 'L' and is_trembl_blast(row):
+            state = 'trembl'
+            title = plain(('BLASTp contra referência TrEMBL (não revisada): registrado, não pontua',
+                           'BLASTp against a TrEMBL (unreviewed) reference: recorded, scores nothing'))
+        out.append('<span class="badge %s" title="%s">%s</span>' % (state, esc(title), name))
     return ''.join(out)
+
+
+def confidence_class(value):
+    value = str(value)
+    if value.startswith('Alta'):
+        return 'high'
+    if value.startswith('Baixa'):
+        return 'low'
+    return 'medium'
 
 
 def section_candidates(ctx):
@@ -1995,7 +2038,7 @@ def section_candidates(ctx):
         organism = label_html(strain, short=True) if strain else esc(code)
         sort_org = label_full(strain) if strain else code
         conf = split_bilingual(row.get('confidence', ''))
-        conf_cls = 'high' if str(row.get('confidence', '')).startswith('Alta') else 'medium'
+        conf_cls = confidence_class(row.get('confidence', ''))
         hits = blast.get(row.get('feature_id', ''), [])
         expandable = bool(hits)
         rows_html.append(
@@ -2030,12 +2073,16 @@ def section_candidates(ctx):
             hit_rows = []
             for hit in shown:
                 info = parse_reference_id(hit['sseqid'])
+                status = {'reviewed': ('Swiss-Prot', 'Swiss-Prot'),
+                          'unreviewed': ('TrEMBL (não pontua)', 'TrEMBL (scores nothing)')}.get(
+                              info['status'], ('—', '—'))
                 hit_rows.append(
                     '<tr><td><span class="mono gene">%s</span></td>'
-                    '<td><i>%s</i></td><td class="mono">%s</td>'
+                    '<td><i>%s</i></td><td class="mono">%s</td><td>%s</td>'
                     '<td class="right">%s%%</td><td class="right">%s</td>'
                     '<td class="right mono">%s</td><td class="right">%s</td></tr>'
                     % (esc(info['gene'] or '-'), esc(info['organism']), esc(info['uniprot']),
+                       T(status),
                        num(to_float(hit['pident'], 0.0), 1), num(to_int(hit['length'], 0)),
                        esc(fmt_evalue(hit['evalue'])), num(to_float(hit['bitscore'], 0.0), 0)))
             more = ''
@@ -2046,11 +2093,12 @@ def section_candidates(ctx):
             rows_html.append(
                 '<tr class="evidence" id="evi-%d" hidden><td colspan="11">'
                 '<h5>%s</h5><table class="inner"><thead><tr>'
-                '<th>%s</th><th>%s</th><th>UniProt</th><th>%s</th><th>%s</th>'
+                '<th>%s</th><th>%s</th><th>UniProt</th><th>%s</th><th>%s</th><th>%s</th>'
                 '<th>E-value</th><th>%s</th></tr></thead><tbody>%s</tbody></table>%s</td></tr>'
-                % (index, T(('Alinhamentos BLASTp contra as referências curadas',
-                             'BLASTp alignments against the curated references')),
+                % (index, T(('Alinhamentos BLASTp contra as referências do UniProt',
+                             'BLASTp alignments against the UniProt references')),
                    T(('Gene', 'Gene')), T(('Organismo de referência', 'Reference organism')),
+                   T(('Base', 'Database')),
                    T(('Identidade', 'Identity')), T(('Extensao', 'Length')), T(('Bitscore', 'Bitscore')),
                    ''.join(hit_rows), more))
 
@@ -2187,7 +2235,13 @@ def section_phylogeny(ctx):
     strains = ctx['strains']
     for row in ctx['tree_labels']:
         tree_label = row.get('tree_label', '')
-        origin = 'strain' if row.get('origin', '').startswith('estirpe') else 'reference'
+        raw_origin = row.get('origin', '')
+        if raw_origin.startswith('estirpe'):
+            origin = 'strain'
+        elif raw_origin.startswith('grupo externo'):
+            origin = 'outgroup'
+        else:
+            origin = 'reference'
         if origin == 'strain':
             code = tree_label.split('_')[0]
             strain = strains.get(code)
@@ -2213,7 +2267,9 @@ def section_phylogeny(ctx):
     tree_svg += legend([('var(--series-1)', ('UreC das estirpes deste estudo',
                                              'UreC from this study’s strains')),
                         ('var(--muted)', ('UreC de referência (UniProt, revisada)',
-                                          'reference UreC (UniProt, reviewed)'))])
+                                          'reference UreC (UniProt, reviewed)')),
+                        ('var(--series-2)', ('grupo externo, raiz da árvore (UniProt, revisada)',
+                                             'outgroup, tree root (UniProt, reviewed)'))])
 
     stats = ctx['iqtree']
     facts = [
@@ -2233,12 +2289,16 @@ def section_phylogeny(ctx):
 
     status = ctx['phylo_status']
     method = ('<p class="note">%s</p>' % T((
-        'Sequências de UreC das estirpes e das referências curadas alinhadas com MAFFT --auto, '
-        'aparadas com trimAl -automated1 e reconstruídas com IQ-TREE 2 (-m MFP) e 1000 ultrafast '
-        'bootstraps. Os valores de suporte aparecem nos nós internos apenas quando ≥ 70.',
-        'UreC sequences from the strains and the curated references aligned with MAFFT --auto, '
-        'trimmed with trimAl -automated1 and reconstructed with IQ-TREE 2 (-m MFP) and 1000 ultrafast '
-        'bootstraps. Support values are shown on internal nodes only when ≥ 70.')))
+        'Sequências de UreC das estirpes, das referências revisadas de Firmicutes e do grupo externo '
+        '(Klebsiella aerogenes e Proteus mirabilis) alinhadas com MAFFT --auto, aparadas com trimAl '
+        '-automated1 e reconstruídas com IQ-TREE 2 (-m MFP) e 1000 ultrafast bootstraps, com a '
+        'árvore enraizada no grupo externo (-o). Os valores de suporte aparecem nos nós internos '
+        'apenas quando ≥ 70.',
+        'UreC sequences from the strains, the reviewed Firmicutes references and the outgroup '
+        '(Klebsiella aerogenes and Proteus mirabilis) aligned with MAFFT --auto, trimmed with trimAl '
+        '-automated1 and reconstructed with IQ-TREE 2 (-m MFP) and 1000 ultrafast bootstraps, with '
+        'the tree rooted on the outgroup (-o). Support values are shown on internal nodes only '
+        'when ≥ 70.')))
 
     files = '<p class="links">%s %s %s %s</p>' % (
         link(ctx, ('ureC.treefile', 'ureC.treefile'), '06_phylogeny', 'ureC.treefile'),
@@ -2490,10 +2550,12 @@ tr.evidence>td{background:var(--plane);padding:14px 16px}
   font-size:11px;font-weight:700;text-align:center;font-family:ui-monospace,monospace}
 .badge.on{background:var(--series-1);color:var(--on-series-1)}
 .badge.off{background:var(--cell-empty);color:var(--muted)}
+.badge.trembl{background:transparent;color:var(--series-1);box-shadow:inset 0 0 0 1.5px var(--series-1)}
 .bit{display:inline-block;min-width:20px;font-family:ui-monospace,monospace;font-weight:600}
 .bit.on{color:var(--series-1)} .bit.off{color:var(--muted)}
 .conf{font-size:12.5px;font-weight:600;white-space:nowrap}
 .conf.high{color:var(--series-1)} .conf.medium{color:var(--text-secondary);font-weight:400}
+.conf.low{color:var(--muted);font-weight:400;font-style:italic}
 .controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:12px 0 0}
 .controls input[type=search]{flex:1;min-width:220px;padding:7px 11px;font:inherit;font-size:13.5px;
   background:var(--plane);color:var(--text-primary);

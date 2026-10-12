@@ -41,6 +41,14 @@ params.local_genomes = null
 //        may be too few for bootstrap, or even for more than one topology to exist.
 params.phylo_include_refs = true
 
+// PT-BR: UreC de Gammaproteobacteria (Klebsiella aerogenes, Proteus mirabilis) que enraizam a
+//        árvore: entram no alinhamento e o IQ-TREE enraiza nelas (-o). Baixadas junto com as
+//        referências pelo fetch_references.py. false deixa a árvore sem raiz.
+// EN-US: Gammaproteobacteria UreC (Klebsiella aerogenes, Proteus mirabilis) that root the
+//        tree: they enter the alignment and IQ-TREE roots on them (-o). Downloaded along with
+//        the references by fetch_references.py. false leaves the tree unrooted.
+params.phylo_outgroup = "data/urec_outgroup.fasta"
+
 // PT-BR: Genes flanqueadores de cada lado do locus de urease no recorte para a sintenia.
 //        5 dá um contexto de ~11 genes por região — suficiente para ver rearranjo e perda
 //        de gene sem arrastar o cromossomo inteiro para dentro do clinker.
@@ -146,7 +154,11 @@ process STAGE_LOCAL_GENOME {
 
     script:
     """
-    cp -L input/${fasta.name} ${strain}.fna
+    # PT-BR: A variável do path já é o caminho encenado, com o prefixo input/; prefixar de
+    #        novo dava input/input/ e matava a estirpe antes de qualquer análise.
+    # EN-US: The path variable is already the staged path, input/ prefix included; prefixing
+    #        it again gave input/input/ and killed the strain before any analysis.
+    cp -L ${fasta} ${strain}.fna
 
     # PT-BR: Estirpe e arquivo vão por argv, não interpolados no código Python.
     # EN-US: Strain and file go through argv, not interpolated into the Python code.
@@ -410,6 +422,8 @@ process BUILD_PHYLOGENY {
     path candidate_tsvs
     path faa_files
     path ref_fasta
+    // PT-BR: Lista vazia quando params.phylo_outgroup é false / EN-US: Empty list when params.phylo_outgroup is false
+    path outgroup_fasta
     // PT-BR: Entra como arquivo para que o conteúdo do script conte no hash da tarefa.
     // EN-US: Comes in as a file so the script's content counts towards the task hash.
     path script_py
@@ -426,12 +440,13 @@ process BUILD_PHYLOGENY {
 
     script:
     def refs_arg = params.phylo_include_refs ? "--references ${ref_fasta} \\\n        " : ""
+    def outgroup_arg = params.phylo_outgroup ? "--outgroup ${outgroup_fasta} \\\n        " : ""
     """
     cat ${faa_files} > all_proteins.faa
     python3 ${script_py} \\
         --fasta-in all_proteins.faa \\
         --candidates-dir . \\
-        ${refs_arg}--threads ${task.cpus} \\
+        ${refs_arg}${outgroup_arg}--threads ${task.cpus} \\
         --out-dir .
     """
 }
@@ -451,6 +466,7 @@ workflow {
  Bakta DB Path    : ${absPath(params.bakta_db)}
  CheckM2 DB Path  : ${absPath(params.checkm2_db)}
  Local Genomes    : ${params.local_genomes ?: '-'}
+ UreC Outgroup    : ${params.phylo_outgroup ?: '-'}
  Output Directory : ${params.outdir}
 ========================================================================================
 """
@@ -531,6 +547,7 @@ workflow {
         all_candidates,
         all_faas,
         file(params.references),
+        params.phylo_outgroup ? file(params.phylo_outgroup, checkIfExists: true) : [],
         file("${projectDir}/bin/build_phylogeny.py")
     )
 }
