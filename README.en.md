@@ -9,19 +9,19 @@
 
 ## 1. General Project Description
 
-**BAFES-urease-mining** is an automated bioinformatics pipeline built in Nextflow DSL2 and Python 3.11, fully containerized via Docker. It is designed for genomic mining, functional identification, and evolutionary analysis of genes involved in urea catabolism across bacterial genomes.
+**BAFES-urease-mining** is an automated bioinformatics pipeline built with Nextflow DSL2 and Python 3.11 and run in a Docker container. It performs genomic mining, functional identification, and evolutionary analysis of genes involved in urea catabolism in bacterial genomes.
 
-The pipeline analyses whatever list of genomes you provide — GenBank/RefSeq accessions and, optionally, local FASTA assemblies (see [Input genomes](#input-genomes)) — and investigates three metabolic avenues in each one:
+The pipeline analyses the genomes you provide — GenBank/RefSeq accessions and, optionally, local FASTA assemblies (see [Input genomes](#input-genomes)) — and investigates three systems related to urea metabolism:
 
 1. **Canonical Urease Pathway**: Catalytic subunits ($\gamma$ - UreA, $\beta$ - UreB, $\alpha$ - UreC) and accessory maturation proteins (UreD, UreE, UreF, UreG).
 2. **Active Urea Transport System**: ABC transporter complex $urtABCDE$ (UrtA, UrtB, UrtC, UrtD, UrtE).
 3. **Nickel-Independent Alternative Pathway**: Urea carboxylase (`uc`, EC 6.3.4.6) coupled with allophanate hydrolase (`ah`, EC 3.5.1.54).
 
-**Example dataset.** The repository ships configured with the dataset that motivated the project:
-10 aerobic endospore-forming bacteria (**BAFES**, from the Brazilian Portuguese *Bactérias
-Aeróbicas Formadoras de Endósporos*) from the **CBAFES/UnB collection**, isolated from soils of
-Distrito Federal, Brazil (accessions `VKHW00000000.1` to `VKIC00000000.1`, in
-[data/accessions.tsv](data/accessions.tsv)). Throughout this README, counts and strain names (S1,
+**Example dataset.** The repository's default input list contains 10 genomes from the
+**CBAFES/UnB collection** of aerobic endospore-forming bacteria (BAFES, Brazilian Portuguese
+*Bactérias Aeróbicas Formadoras de Endósporos*). The bacteria were isolated from soils in Brazil's
+Federal District. Their accessions (`VKHW00000000.1` to `VKIC00000000.1`) are listed in
+[data/accessions.tsv](data/accessions.tsv). Throughout this README, counts and strain names (S1,
 S2–S10) refer to that dataset and are for illustration only.
 
 ### Input genomes
@@ -31,17 +31,18 @@ The pipeline runs on the genomes listed in up to two tab-separated files with a 
 | File | Option | Columns | Purpose |
 | :--- | :--- | :--- | :--- |
 | `accessions.tsv` | `--accessions` (default: `data/accessions.tsv`) | `strain`, `species`, `genbank_accession` | Public genomes, downloaded from NCBI. Takes an assembly (`GCA_`/`GCF_`) or a WGS master (`VKHW00000000.1`), which is resolved to its assembly before download. |
-| Local genomes TSV | `--local-genomes` (optional) | `strain`, `species`, `fasta` | Assemblies that are not on NCBI. The FASTA path is relative to the launch directory; the genome skips the download and goes straight to QC and Bakta. Example: [data/local_genomes.tsv](data/local_genomes.tsv). |
+| Local genomes TSV | `--local-genomes` (optional) | `strain`, `species`, `fasta` | Assemblies that are not on NCBI. The FASTA path is relative to the working directory from which the command is run. The genome skips downloading and goes directly to QC and Bakta annotation. Example: [data/local_genomes.tsv](data/local_genomes.tsv). |
 
 Rules:
 
-- `strain` is the short identifier that names every output (`results/00_genomes/{strain}.fna`,
-  `{strain}_candidates.tsv`, …). It must not repeat, within a file or across the two: a repeated
-  ID aborts the run before any task starts.
+- `strain` is the short identifier used in output filenames (`results/00_genomes/{strain}.fna`,
+  `{strain}_candidates.tsv`, …). It must be unique across both files. A duplicate ID stops the
+  pipeline before any task starts.
 - `species` is informative (it shows in the report); it may be `Unknown`.
-- Every genome, downloaded or local, goes through the same validation: contigs, >= 500 kb and the
-  nucleotide alphabet. An invalid genome, or one that fails to download, stops the whole run
-  (Nextflow's default error strategy); fix or drop the row and continue with `--resume`.
+- Every genome, downloaded or local, goes through the same validation: it must contain contigs,
+  be at least 500 kb long, and use a valid nucleotide alphabet. An invalid genome or a failed
+  download stops the whole run (Nextflow's default error strategy); fix or remove the row, then
+  resume with `--resume`.
 - The pre-check requires at least one accession in `accessions.tsv`.
 
 ```bash
@@ -52,21 +53,21 @@ Rules:
 ./run.sh --exec --accessions my_list.tsv --local-genomes my_fastas.tsv --verbose
 ```
 
-Two things depend on the taxonomic group of the input genomes:
+Two choices depend on the taxonomic group of the input genomes:
 
 - **BLASTp references.** The default set is Firmicutes, the phylum of the example dataset. For
-  genomes from other groups, change the slice with `fetch_references.py --query` (see the reference
+  genomes from other groups, adjust the query with `fetch_references.py --query` (see the reference
   set paragraph in [Data Integrity](#7-data-integrity)).
 - **Resources.** Run time grows with the number of genomes. The CPU and memory limits in
-  [nextflow.config](nextflow.config) are sized for a 96-core host, so that up to 10 strains clear
-  hmmscan in a single wave.
+  [nextflow.config](nextflow.config) are sized for a 96-core host, allowing hmmscan to process up
+  to 10 strains concurrently.
 ---
 
 ## 2. Quick-Start
 
 ### Prerequisites
 
-The whole pipeline runs **inside the `bafes-urease` container**. The host only needs:
+The bioinformatics workflow runs **inside the `bafes-urease` container**. The host only needs:
 
 - Docker Engine >= 24.0 (with your user in the `docker` group)
 - Git, Bash, and `curl`
@@ -77,7 +78,7 @@ Nextflow, Bakta, BLAST+, HMMER, MAFFT, trimAl, IQ-TREE, QUAST, and clinker all s
 image — none of them need to be installed on the host. To run without Docker (with a preconfigured
 Conda/Mamba environment), use `--runtime local`.
 
-### Three-Step Command Sequence
+### Recommended three-step sequence
 
 ```bash
 # Clone the repository and enable the wrapper
@@ -85,25 +86,21 @@ git clone https://github.com/waldeyr/bafes-urease.git
 cd bafes-urease
 chmod +x run.sh
 
-# Step A — Bootstrap: builds the image, downloads Pfam and the full Bakta database.
-#    First run takes hours (image build ~20 min + Bakta full DB ~75 GB). Idempotent:
-#    every completed step is skipped on subsequent runs.
-#    Upgrading from an install that used the old `bafes_urease` tag? Retag first to
-#    avoid a ~20-minute rebuild:
-#        docker tag bafes_urease bafes-urease && docker rmi bafes_urease
+# Step A — Bootstrap: builds the image and downloads Pfam and the full Bakta database.
 ./run.sh --bootstrap --runtime docker --container-image bafes-urease
 
-# Step B — Build & Pre-flight Check (validates environment & resource reachability)
+# Step B — Build and pre-flight check (validates the environment and access to external resources)
 ./run.sh --build --runtime docker --container-image bafes-urease
 
-# Step C — Pipeline Execution with real-time tqdm progress tracking & detailed logging
+# Step C — Runs the pipeline with detailed logging and tqdm progress bars.
+#          Once the pipeline finishes, open results/index.html to view the consolidated report.
 ./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
-Every `run.sh` invocation returns the prompt immediately and keeps running inside a detached
-`screen` session — see [Automatic `screen` Session](#87-automatic-screen-session) for following the
-log and reading the real exit code. Further parameter combinations (reduced database, resuming an
-interrupted run, alternative paths, running without a container) are in
+Every `run.sh` invocation returns the prompt immediately; the process continues in a detached
+`screen` session. See [Automatic `screen` Session](#87-automatic-screen-session) to follow the log
+and check the actual exit code. Other parameter combinations (reduced database, resuming an
+interrupted run, alternative paths, and running without a container) are described in
 [Installation & Usage](#8-installation--usage).
 
 ---
@@ -116,12 +113,16 @@ The pipeline executes a modular, multi-tier analysis workflow:
 flowchart TD
     Preflight["00_preflight: Resource Pre-checks & Network Validation"] --> Download["00_genomes: NCBI Genome Download"]
     Download --> QC["01_qc: QUAST & CheckM2 Quality Control"]
-    QC --> Bakta["02_bakta: Functional Annotation (Bakta)"]
+    Download --> Bakta["02_bakta: Functional Annotation (Bakta)"]
     Bakta --> Candidates["03_candidates: 3-Layer Screening (Bakta + BLASTp + HMMER3)"]
     Candidates --> Summary["04_summary: Presence/Absence Matrix & Unified Summary"]
-    Candidates --> Synteny["05_synteny: Gene Neighborhood Analysis (clinker ±10 kb)"]
+    Candidates --> Locus["05_synteny: Locus extraction (5 flanking genes)"]
+    Locus --> Synteny["05_synteny: Synteny map (clinker)"]
     Candidates --> Phylogeny["06_phylogeny: UreC Phylogeny (MAFFT + trimAl + IQ-TREE 2)"]
 ```
+
+After genome acquisition, QC and Bakta annotation run in parallel. After candidate screening, the
+summary matrix, synteny map, and UreC phylogeny are generated in independent branches.
 
 ---
 
@@ -129,13 +130,13 @@ flowchart TD
 
 | Phase ID & Name | Process / Script | Description | Rules & Applied Filters | Output Artifacts |
 | :--- | :--- | :--- | :--- | :--- |
-| **00_preflight** | `resource_checker.py` / `PREFLIGHT_CHECK` | Pre-flight validation of external resources & network endpoints | Validates HTTP Status 200/JSON for every input NCBI accession, Pfam FTP URL, and Bakta Zenodo DB. Aborts with Exit Code 4 if critical resources are unreachable. | `results/00_preflight/preflight_status.txt` |
+| **00_preflight** | `resource_checker.py` / `PREFLIGHT_CHECK` | Pre-flight validation of external resources and network endpoints | Checks for HTTP 200/JSON responses from each NCBI accession and the Pfam FTP and Bakta Zenodo endpoints. Exits with code 4 if a critical resource is unreachable. | `results/00_preflight/preflight_status.txt` |
 | **00_genomes** | `DOWNLOAD_GENOME` | Automated acquisition of bacterial assembly FASTA files | Queries NCBI Datasets CLI v2 by accession. Automatically falls back to NCBI Entrez `efetch` if Datasets API fails. Local genomes (`--local-genomes`) skip the download and go through the same validation in `STAGE_LOCAL_GENOME`. | `results/00_genomes/{strain}.fna` |
 | **01_qc** | `QC_QUAST` & `QC_CHECKM2` | Genomic assembly quality control & contamination check | Evaluates N50, GC content, total length (QUAST), completeness >= 95%, and contamination <= 5% (CheckM2). | `results/01_qc/quast/`, `results/01_qc/checkm2/` |
 | **02_bakta** | `BAKTA_ANNOTATE` | Structural & functional genome annotation | Uses Bakta v1.9+ with full database. Assigns RefSeq/UniRef IDs, EC numbers (3.5.1.5, 6.3.4.6, 3.5.1.54), and gene symbols. | `results/02_bakta/{strain}/` (.json, .gff3, .faa, .gbff) |
 | **03_candidates** | `extract_urease_candidates.py` | 3-Layer candidate screening & evidence consolidation | **Layer A (Bakta)**: EC & gene symbol filtering.<br>**Layer B (BLASTp)**: E-value <= 1e-5, Identity >= 30%, Coverage >= 50%.<br>**Layer C (HMMER3)**: Domain score >= 20.0 against Pfam profiles.<br>**Score**: see [Candidate screening score](#candidate-screening-score) — High (>= 2 points), Medium (1), Low (TrEMBL BLASTp only). | `results/03_candidates/{strain}/{strain}_candidates.tsv` |
 | **04_summary** | `merge_strain_results.py` | Cross-strain matrix aggregation | Merges candidate TSVs across all strains. Constructs binary (1/0) matrix for 11 target genes ($ureA$–$ureH$, $urtA$, $uc$, $ah$). | `results/04_summary/urease_presence_absence.tsv`, `summary_unified.tsv` |
-| **05_synteny** | `synteny_analysis.py` | Gene neighborhood & synteny visualization | Extracts $\pm 10$ kb genomic window centered on $ureC$. Runs `clinker` to produce an interactive SVG/HTML map. | `results/05_synteny/synteny.html` |
+| **05_synteny** | `extract_urease_locus.py` / `synteny_analysis.py` | Gene neighborhood and synteny visualization | Extracts regions anchored on high-confidence candidates, pathway genes, or diagnostic Pfam profiles, with up to five flanking genes on each side, then runs `clinker` to produce an interactive HTML map. At least two genomes must have an extracted locus. The step fails if too few GenBank files are available or if `clinker` fails; no placeholder HTML is written. | `results/05_synteny/synteny.html` |
 | **06_phylogeny** | `build_phylogeny.py` | UreC evolutionary tree reconstruction | Requires >= 3 UreC protein sequences. Adds the reference UreC and the outgroup (`data/urec_outgroup.fasta`). Runs MAFFT `--auto` alignment $\rightarrow$ trimAl `-automated1` $\rightarrow$ IQ-TREE 2 (1000 ultrafast bootstraps, rooted on the outgroup with `-o`). | `results/06_phylogeny/ureC.treefile`, `ureC.aln` |
 
 ### Candidate screening score
@@ -147,10 +148,10 @@ Bakta's, so agreeing with it is not independent evidence. The status of the best
 
 | Evidence | Points |
 | :--- | :--- |
-| Layer A — Bakta: target gene, EC number or product | 1 |
+| Layer A — Bakta: target gene, EC number or product \* | 1 |
 | Layer B — BLASTp with its best hit on a reviewed (Swiss-Prot) reference | 1 |
 | Layer B — BLASTp with its best hit on an unreviewed (TrEMBL) reference | 0 (recorded) |
-| Layer C — HMMER: Pfam profile from the list, domain score >= 20 | 1 |
+| Layer C — HMMER: Pfam profile from the list, domain score >= 20 \* | 1 |
 
 | Points | Confidence |
 | :--- | :--- |
@@ -168,17 +169,42 @@ Bakta's, so agreeing with it is not independent evidence. The status of the best
 | Bakta only, or HMMER only | 1 | Medium |
 | BLASTp (TrEMBL) only | 0 | Low |
 
-Today only UrtA–E, `uca` and `atzF` come from TrEMBL. UrtA–E and `atzF` have no profile in the
-Layer C list, so in practice they reach Medium at most. Urea carboxylase (`uca`) carries the CT_C_D
-domain (PF02682), which is on the list, so it can still reach High with Bakta + HMMER. A custom reference FASTA (`--references`) whose
-headers do not follow the `ref|gene|UniProt:accession|organism|status|Naa` format gets status
-`unknown` and scores as reviewed.
+\* **Rules for the KipI/PxpABC family (5-oxoprolinase).**
+
+- `pxpA/B/C` and `kipI/A` genes are excluded from Layer A, even when the product contains
+  "allophanate" or has EC 3.5.1.54 (`kipI_family`).
+- The CT_C_D domain (PF02682) counts in Layer C only when the same protein also has a biotin
+  carboxylase domain (PF00289, PF02786 or PF02785), the urea carboxylase architecture. CT_C_D
+  alone does not count (`ct_c_d_without_bc`). Urea carboxylase split across separate subunits is
+  also excluded.
+- The matrix (`merge_strain_results.py`) and synteny-map highlighting (`generate_report.py`) do not
+  classify KipI-family gene products as `uc` or `ah`.
+
+Evidence removed by these rules is recorded in `_filtered.tsv`, with the reason. In the default
+query, UrtA–E, `uca` and `atzF` are retrieved by exact gene name. UrtA–E and `atzF` have no dedicated
+profile in Layer C; for `uca`, CT_C_D can contribute when it occurs in the same protein as biotin
+carboxylase. A custom reference FASTA (`--references`) whose headers do not follow
+`ref|gene|UniProt:accession|organism|status|Naa` gets status `unknown` and scores as reviewed.
+
+#### Filters before scoring
+
+UrtD and UrtE are ATPases in an ABC transporter, a broad protein family. Two filters run before
+scoring to restrict TrEMBL hits to closer matches and check transporter context:
+
+| Filter | Rule | Parameter (default) |
+| :--- | :--- | :--- |
+| TrEMBL identity | A BLASTp hit on an unreviewed reference only counts at identity >= 80 %, on top of the general thresholds (E <= 1e-5, identity >= 30 %, coverage >= 50 %) | `--trembl_min_identity` (80) |
+| Operon context | UrtB–E (by Bakta gene or by the best hit's reference) count only if a UrtA is on the same contig within 5 CDS; otherwise, the `urt` evidence is removed, and the row is dropped if no other layer remains | `--urt_operon_window` (5) |
+
+All filtered evidence is recorded in
+`results/03_candidates/{strain}/{strain}_filtered.tsv`, together with the reference, identity, and
+reason. The report also shows the count for each reason.
 
 ---
 
 ## 5. Data Provenance & Lineage Diagram
 
-The diagram below maps data flow from primary external databases to downstream analytical artifacts:
+The diagram below shows how data flows from primary external databases to the analytical outputs:
 
 ```mermaid
 flowchart LR
@@ -203,7 +229,7 @@ flowchart LR
 
     subgraph Derived_Outputs ["Derived Analytical Products"]
         Screening -->|Consolidated Candidates| Summary["04_summary (urease_presence_absence.tsv)"]
-        Screening -->|GBFF Loci (±10 kb)| Synteny["05_synteny (synteny.html)"]
+        Screening -->|Extracted GBFF loci (5 flanking genes)| Synteny["05_synteny (synteny.html)"]
         Screening -->|UreC FASTA| Phylogeny["06_phylogeny (ureC.treefile)"]
     end
 ```
@@ -236,41 +262,39 @@ flowchart LR
 ## 7. Data Integrity
 
 The pipeline **never fabricates data**. Any step that cannot produce a real result from the
-input genomes fails explicitly (exit != 0) instead of substituting a plausible-looking value:
+input genomes exits with a non-zero status instead of substituting a plausible-looking value:
 
 - **Genomes.** WGS master accessions (like the example dataset's, `VKHW00000000.1`) carry no
   sequence — an `efetch` on them returns zero bytes.
   [download_genome.py](bin/download_genome.py) resolves the accession to its assembly
   (`GCA_`/`GCF_`) before downloading, then validates contigs, base count (>= 500 kb), and the
-  nucleotide alphabet. Without a real genome, the strain does not continue.
+  nucleotide alphabet. Without a valid genome, the strain does not proceed.
 - **QC.** CheckM2 actually runs against its database. There are no hardcoded
   completeness/contamination values.
 - **Annotation.** Without the Bakta database, `BAKTA_ANNOTATE` fails. There is no substitute
   annotation with invented genes.
 - **References.** The sequences in [urease_references.fasta](data/urease_references.fasta) and
   the outgroup in [urec_outgroup.fasta](data/urec_outgroup.fasta) are downloaded from UniProt via
-  REST queries (described below). Nothing is synthesised locally — a network failure, a
+  REST queries (described below). No sequences are generated locally — a network failure, a
   truncated response or an empty result set aborts without writing either file. Regenerate with
   `python3 bin/fetch_references.py`.
 - **Synteny and phylogeny.** No placeholder HTML and no partial trees. With fewer than 3 UreC
   sequences, that is recorded in `phylogeny_status.txt` as a legitimate outcome — no tree is
   possible — and no tree file is written.
 
-Reference set — query `(taxonomy_id:1239) AND (((protein_name:urease) AND (reviewed:true)) OR
+The reference query is `(taxonomy_id:1239) AND (((protein_name:urease) AND (reviewed:true)) OR
 (gene_exact:urtA OR … OR gene_exact:urtE OR gene_exact:uca OR gene_exact:atzF))` against
 `https://rest.uniprot.org/uniprotkb/stream`. All entries are Firmicutes: the urease subunits and
 accessory proteins (UreA–I) are reviewed (Swiss-Prot) only, while the transporter (UrtA–E), urea
 carboxylase (`uca`) and allophanate hydrolase (`atzF`) may be unreviewed (TrEMBL). The set keeps
-one sequence per gene and species — reviewed first, then the lowest accession; `--keep-redundant`
-turns this off. A sanity floor of 100 sequences applies to the raw response (below that it is
-treated as truncated and aborts). The UreC tree outgroup — the reviewed UreC of *Klebsiella
+one sequence for each gene in each species — reviewed entries first, then the lowest accession;
+`--keep-redundant` turns this off. The raw response must contain at least 100 sequences; a smaller
+result is treated as truncated and the run aborts. The UreC tree outgroup — the reviewed UreC of *Klebsiella
 aerogenes* (P18314) and *Proteus mirabilis* (P17086) — goes to `data/urec_outgroup.fasta`, used
-only by the tree and kept out of BLASTp. The set is **live**: it tracks UniProt and changes with
-every release (on release 2026_03, 960 sequences after deduplication — 109 reviewed and 851
-unreviewed — out of 1,074 in the response). Reproducibility does not rest on a fixed accession
-list but on the provenance records written next to each FASTA
-(`data/urease_references.provenance.txt`, `data/urec_outgroup.provenance.txt` — release, date,
-counts and `sha256`). To pin a different slice, use `--query` or `--url`.
+only by the tree and kept out of BLASTp. The reference set comes from a live UniProt query and can
+change between releases. The provenance files beside each FASTA record the release, date, counts,
+and `sha256` (`data/urease_references.provenance.txt`, `data/urec_outgroup.provenance.txt`). To
+select a different taxonomic scope, use `--query` or `--url`.
 
 ---
 
@@ -295,21 +319,17 @@ chmod +x run.sh
 
 ### 8.3 Quick-Start sequence
 
-The recommended sequence, repeated here in full:
+The recommended sequence, also shown in the [Quick-Start](#2-quick-start):
 
 ```bash
-# Step A — Bootstrap: builds the image, downloads Pfam and the full Bakta database.
-#    First run takes hours (image build ~20 min + Bakta full DB ~75 GB). Idempotent:
-#    every completed step is skipped on subsequent runs.
-#    Upgrading from an install that used the old `bafes_urease` tag? Retag first to
-#    avoid a ~20-minute rebuild:
-#        docker tag bafes_urease bafes-urease && docker rmi bafes_urease
+# Step A — Bootstrap: builds the image and downloads Pfam and the full Bakta database.
 ./run.sh --bootstrap --runtime docker --container-image bafes-urease
 
-# Step B — Build & Pre-flight Check (validates environment & resource reachability)
+# Step B — Build and pre-flight check (validates the environment and access to external resources)
 ./run.sh --build --runtime docker --container-image bafes-urease
 
-# Step C — Pipeline Execution with real-time tqdm progress tracking & detailed logging
+# Step C — Runs the pipeline with detailed logging and tqdm progress bars.
+#          Once the pipeline finishes, open results/index.html to view the consolidated report.
 ./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
@@ -317,10 +337,10 @@ The recommended sequence, repeated here in full:
 
 All three modes (`--bootstrap`, `--build`, `--exec`) accept the same options, and the defaults
 already match the Quick-Start (`--runtime docker`, `--container-image bafes-urease`,
-`--bakta-db-type full`). The examples below cover the most common deviations.
+`--bakta-db-type full`). The examples below cover common configurations.
 
-**Bootstrap with the reduced database** — when ~160 GB is not available; the light Bakta DB takes
-~10 GB and annotates fewer RefSeq/UniRef identifiers:
+**Bootstrap with the reduced database** — when ~160 GB of free space is unavailable; the light
+Bakta DB requires ~10 GB and annotates fewer RefSeq/UniRef identifiers:
 
 ```bash
 ./run.sh --bootstrap --bakta-db-type light
@@ -347,8 +367,8 @@ version drift and keeps the local copy:
 ./run.sh --bootstrap --update-db
 ```
 
-**Chain build and execution propagating the exit code** — `--wait` blocks until each phase ends,
-so the `&&` only fires if the previous one exited 0:
+**Chain build and execution while propagating the exit code** — `--wait` blocks until each phase
+ends, so the second command runs only if the first exits with code 0:
 
 ```bash
 ./run.sh --build --wait && ./run.sh --exec --wait --verbose
@@ -400,8 +420,8 @@ host:
 ./run.sh --exec --runtime singularity --container-image bafes-urease --verbose
 ```
 
-**Full unattended round** — reduced database, everything in the foreground and chained, suitable
-for launching inside a queue job:
+**Run the full pipeline without interaction** — use the reduced database, run each step in the
+foreground, and chain the commands. This is suitable for a queue job:
 
 ```bash
 ./run.sh --bootstrap --bakta-db-type light --no-screen \
@@ -438,7 +458,7 @@ for launching inside a queue job:
 
 Databases are not only checked for existence — the installed version is checked too. This matters
 because the source URLs are **rolling**: `Pfam/current_release` serves different releases over
-time, so "the file exists" does not say *which* release sits on disk.
+time, so the presence of a file does not tell you *which* release is installed.
 
 `run.sh` records the downloaded version under `db/.versions/` and compares it against what is
 available:
@@ -451,18 +471,17 @@ available:
 | AMRFinderPlus | target of the `amrfinderplus-db/latest` symlink | queried by `amrfinder_update` |
 | UniProt references | `uniprot_release` in `data/urease_references.provenance.txt` | `x-uniprot-release` header from the REST API |
 
-**Nothing is re-downloaded while the database exists**, not even on version drift: `--bootstrap`
-only warns and keeps the local copy. Re-fetching the full Bakta DB means ~75 GB and hours of
-network, so updating is always explicit, via `--update-db`. With no network to query the remote
-version, the local copy is kept without error.
+By default, `--bootstrap` does not replace an existing database, even if its version differs; it
+reports the difference and keeps the local copy. Re-downloading the full Bakta DB requires ~75 GB
+of transfer, so updates require the explicit `--update-db` option. If the remote
+version cannot be checked because the network is unavailable, the local copy is kept without error.
 
-The UniProt references come from a **live** query (`fetch_references.py`) whose result set changes
-with every release. What identifies the local FASTA is therefore the release stamped into
-`data/urease_references.provenance.txt` — alongside the record count and `sha256`. A FASTA
-generated before that record has no known release: `--bootstrap` warns and keeps the file.
+The UniProt references come from a **dynamic** query (`fetch_references.py`) whose result set can
+change with each release. The FASTA provenance records the release, date, sequence count, and
+`sha256` in `data/urease_references.provenance.txt`.
 
-When updating (Bakta and CheckM2), the current database is moved to `.old` and only discarded once
-the new one arrives intact; if the download fails, the working database is restored, not lost.
+When Bakta or CheckM2 is updated, the current database is moved to `.old` and discarded only after
+the new database has downloaded successfully. If the download fails, the working copy is restored.
 
 ```bash
 # Check versions and update only what drifted
@@ -472,14 +491,13 @@ the new one arrives intact; if the download fails, the working database is resto
 ### 8.7 Automatic `screen` Session
 
 Every `run.sh` invocation creates its own **detached** `screen` session and returns the prompt
-immediately, so an SSH drop does not kill the run — which matters because bootstrap takes hours
-and `--exec` takes longer still.
+immediately, so long-running stages can continue without keeping an SSH connection open.
 
 ```
 >>> Sessão / Session : bafes-bootstrap (screen)
 >>> Reanexar / Attach: screen -r bafes-bootstrap        (detach with Ctrl-A D)
->>> Log              : .logs/bootstrap-20260727-1430.log
->>> Código de saída  : .logs/bootstrap-20260727-1430.exitcode
+>>> Log              : .logs/bootstrap-YYYYMMDD-HHMM.log
+>>> Código de saída  : .logs/bootstrap-YYYYMMDD-HHMM.exitcode
 ```
 
 **Mind the exit code.** Because the run continues in the background, the outer invocation returns
@@ -501,7 +519,7 @@ re-read from `/etc/group`; a session created **before** `usermod -aG docker` car
 and every shell inside it inherits that staleness. `run.sh` detects this and re-executes through
 `sg docker`, which re-reads `/etc/group` — there is no need to kill the session.
 
-If it still fails, the user genuinely is not in the group. The admin must run
+If it still fails, the user is not a member of the group. The admin must run
 `sudo usermod -aG docker $USER`, and you must open a new SSH session.
 
 ### 8.9 Configuration via `.env`
@@ -536,14 +554,23 @@ nextflow run main.nf \
 The reports (`nf_report.html`, `nf_trace.txt`, `nf_timeline.html`, `nf_dag.html`) are already
 enabled in `nextflow.config` — there is no need to pass the `-with-*` flags.
 
+`run.sh` generates `results/index.html` automatically at the end of `--exec`. When running Nextflow
+directly, build it after Nextflow finishes (the report reads the complete `nf_trace.txt`; it only
+needs Python 3):
+
+```bash
+python3 bin/generate_report.py --results results --accessions data/accessions.tsv
+```
+
 ### 8.11 Generated Output Structure
 ```
 results/
+├── index.html       # Browsable report: summary, charts and links to every artifact
 ├── 00_preflight/    # Pre-flight validation status
 ├── 00_genomes/      # Assembly FASTA files downloaded from NCBI
 ├── 01_qc/           # QC reports (QUAST + CheckM2)
 ├── 02_bakta/        # Annotations in GFF3, FAA, JSON, GBFF per strain
-├── 03_candidates/   # Consolidated candidates per strain (Bakta + BLASTp + HMMER)
+├── 03_candidates/   # Candidates per strain (Bakta + BLASTp + HMMER) and dropped evidence (_filtered.tsv)
 ├── 04_summary/      # urease_presence_absence.tsv matrix and unified summary
 ├── 05_synteny/      # Interactive synteny viewer (synteny.html)
 └── 06_phylogeny/    # UreC phylogenetic tree (ureC.treefile and alignments)
@@ -551,12 +578,12 @@ results/
 
 ---
 
-## 9. Database & Data Dictionary
+## 9. Data Files & Data Dictionary
 
-### Database Diagram
+### Data Diagram
 
-The pipeline persists tab-delimited tabular files (`.tsv`), structured JSON documents, FASTA
-alignments, and HTML viewers on a directory-structured filesystem:
+The pipeline stores tab-delimited files (`.tsv`), structured JSON documents, FASTA alignments, and
+HTML viewers in a set of output directories:
 
 ```mermaid
 erDiagram
@@ -636,6 +663,16 @@ erDiagram
 | `evidence_points` | Integer | Evidence points (see [Candidate screening score](#candidate-screening-score)) |
 | `confidence` | String | Confidence derived from the points: `Alta/High`, `Media/Medium` or `Baixa/Low` |
 
+#### Table: `results/03_candidates/{strain}/{strain}_filtered.tsv`
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `strain` | String (FK) | Strain identifier |
+| `feature_id` | String | Locus tag of the protein whose evidence was removed |
+| `layer` | String | Removed layer: `blast`, `bakta` or `hmmer` |
+| `reference` | String | BLASTp reference, Bakta gene and product, or HMMER Pfam profile |
+| `identity` | Float | Identity of the BLASTp hit (%); empty for `bakta` and `hmmer` |
+| `reason` | String | `trembl_identity` (below the TrEMBL minimum identity), `urt_without_urtA` (UrtB–E with no neighbouring UrtA), `kipI_family` (pxpA/B/C or kipI/A gene, 5-oxoprolinase) or `ct_c_d_without_bc` (CT_C_D with no biotin carboxylase on the same protein, i.e. PxpB/KipI) |
+
 #### Table: `results/04_summary/urease_presence_absence.tsv`
 | Field | Type | Description |
 | :--- | :--- | :--- |
@@ -650,7 +687,7 @@ erDiagram
 | `ureH` | Integer (0/1) | Presence (1) or absence (0) of the accessory protein UreH |
 | `urtA` | Integer (0/1) | Presence (1) or absence (0) of the urea transporter UrtA |
 | `uc` | Integer (0/1) | Presence (1) or absence (0) of urea carboxylase |
-| `ah` | Integer (0/1) | Presence (1) or absence (0) of allophanate hydrolase |
+| `ah` | Integer (0/1) | Presence (1) or absence (0) of allophanate hydrolase. PxpB/PxpC with product "Allophanate hydrolase" do not count (see \* in the scoring table) |
 
 ---
 
@@ -658,18 +695,18 @@ erDiagram
 
 ### Which databases, and why?
 
-Each database answers a different question, and candidate screening deliberately uses three
-independent sources: no single one (annotation, similarity or domain) is enough to claim a gene is
-present. A candidate is **High** confidence only when at least two layers agree.
+Each database serves a different purpose. Candidate screening combines three evidence layers:
+annotation, sequence similarity, and protein domains. A candidate is **High** confidence only when
+at least two layers support it.
 
 | Database | Step | Why |
 | :--- | :--- | :--- |
 | **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Public source of the genomes listed in `accessions.tsv`. WGS master accessions (like the example dataset's, `VKHW00000000.1`) hold no sequence; [download_genome.py](bin/download_genome.py) resolves them to the `GCA_`/`GCF_` assembly before downloading. Local genomes (`--local-genomes`) do not go through here. |
 | **CheckM2** (`uniref100.KO.1.dmnd`) | `QC_CHECKM2` | Estimates completeness and contamination with a machine-learning model that does not depend on lineage-specific markers — a good fit for strains with no species assigned, like the example dataset's *Bacillus* sp. |
 | **Bakta DB full** | `BAKTA_ANNOTATE` | Standardised bacterial annotation. Its JSON carries gene, product, EC numbers and `db_xrefs`, which make up Layer A. The *full* DB (~75 GB) assigns more RefSeq/UniRef identifiers than *light*. It bundles AMRFinderPlus, an internal Bakta dependency — which is why it shows up in the version check. |
-| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Layer B (BLASTp) | Restricted by default to **Firmicutes** (`taxonomy_id:1239`), the example dataset's phylum, which keeps identity high against the 30 % identity and 50 % coverage thresholds. For urease, **reviewed** entries only (Swiss-Prot), with curator-verified function. For UrtA–E, `uca` and `atzF` Swiss-Prot has no Firmicutes entry (and no UrtA–E in any organism), so TrEMBL entries come in, searched by exact gene name. The query is live, with release and `sha256` recorded in [urease_references.provenance.txt](data/urease_references.provenance.txt). |
-| **UniProtKB/Swiss-Prot** (outgroup) | `BUILD_PHYLOGENY` | Two Gammaproteobacteria UreC that root the UreC tree (see the species question). They live in [urec_outgroup.fasta](data/urec_outgroup.fasta), apart from the BLASTp references. |
-| **Pfam-A** | `EXTRACT_CANDIDATES`, Layer C (hmmscan) | HMM profiles catch remote homology that BLASTp misses and do not depend on Bakta's annotation. Only 10 profiles count as evidence (`UREASE_PFAM_ACCESSIONS` in [extract_urease_candidates.py](bin/extract_urease_candidates.py)). PF01979 (Amidohydro_1) and PF00005 (ABC_tran) are left out because they span whole superfamilies. |
+| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Layer B (BLASTp) | The default query uses Firmicutes (`taxonomy_id:1239`): it searches reviewed ureases and retrieves UrtA–E, `uca` and `atzF` by exact gene name. Results may include reviewed and unreviewed entries; BLASTp scoring uses each reference's status. The query is dynamic, and the release and `sha256` of the downloaded set are recorded in [urease_references.provenance.txt](data/urease_references.provenance.txt). |
+| **UniProtKB/Swiss-Prot** (outgroup) | `BUILD_PHYLOGENY` | Two Gammaproteobacteria UreC sequences root the UreC tree (see the UreC phylogeny row below). They are stored in [urec_outgroup.fasta](data/urec_outgroup.fasta), separately from the BLASTp references. |
+| **Pfam-A** | `EXTRACT_CANDIDATES`, Layer C (hmmscan) | HMM profiles detect remote homology that BLASTp may miss and do not depend on Bakta's annotation. Only 10 profiles count as evidence (`UREASE_PFAM_ACCESSIONS` in [extract_urease_candidates.py](bin/extract_urease_candidates.py)). CT_C_D (PF02682) counts only when it occurs in the same protein as a biotin carboxylase domain; by itself, it occurs in the 5-oxoprolinase PxpB/KipI. PF01979 (Amidohydro_1) and PF00005 (ABC_tran) do not count because they span entire superfamilies. |
 
 **Known limitation.** Pfam and Bakta come from rolling URLs: "the file exists" does not say which
 release is on disk. Reproducibility relies on the versions recorded in `db/.versions/` (see
@@ -677,11 +714,11 @@ release is on disk. Reproducibility relies on the versions recorded in `db/.vers
 
 ### What is the execution order, and why?
 
-Nextflow runs as a dataflow: the "order" is the chain of dependencies, and each strain moves on
-independently. The linear diagram in the [Pipeline Overview](#3-pipeline-overview) simplifies this.
+Nextflow runs as a dataflow: execution follows the dependency chain, while each strain proceeds
+independently. The linear diagram in the [Pipeline Overview](#3-pipeline-overview) is a simplified view.
 
-1. **`PREFLIGHT_CHECK`** — Tests NCBI, Pfam, Bakta and the references first, so a run fails in
-   seconds rather than after hours of annotation and hmmscan.
+1. **`PREFLIGHT_CHECK`** — Checks access to NCBI, Pfam, Bakta, and the references before processing
+   starts, so access failures are detected before annotation and hmmscan begin.
 2. **`DOWNLOAD_GENOME` / `STAGE_LOCAL_GENOME`** — Fetches and validates the FASTA (contigs,
    >= 500 kb, alphabet). Without a real genome, the strain stops here.
 3. **`QC_QUAST` and `QC_CHECKM2`**, in parallel with **`BAKTA_ANNOTATE`** — QC is informative and
@@ -695,10 +732,9 @@ independently. The linear diagram in the [Pipeline Overview](#3-pipeline-overvie
    three consume the candidates: the matrix consolidates them, the locus slice anchors on them and
    the phylogeny takes UreC from them, never from the whole proteome. They are independent of each
    other.
-7. **`EXTRACT_LOCUS`** before **`ANALYZE_SYNTENY`** — clinker aligns every protein against every
-   other. In the example dataset, with the 10 whole genomes (~46,500 CDS), that was ~10⁹ alignments
-   and the step blew its 8 h limit (exit 143). With the locus sliced out (±5 flanking genes), the
-   step takes seconds — and its cost now grows with the size of the locus, not of the genome.
+7. **`EXTRACT_LOCUS`** before **`ANALYZE_SYNTENY`** — Locus extraction gives `clinker` regions
+   anchored on pathway genes, with up to five flanking genes on each side. This limits the
+   comparison to gene neighborhoods relevant to the synteny analysis.
 
 ### Which reference species are used at each step, and why?
 
@@ -707,23 +743,22 @@ independently. The linear diagram in the [Pipeline Overview](#3-pipeline-overvie
 | **Input genomes** | Those listed in `accessions.tsv` and in the `--local-genomes` TSV. In the example dataset: S1 *Lysinibacillus fusiformis* and S2–S10 *Bacillus* sp. (CBAFES/UnB collection), plus the local genomes SDF0008, SDF0018 and SDF0030 from [local_genomes.tsv](data/local_genomes.tsv). | They are the subject of the analysis, not references. |
 | **QC** | None. | QUAST runs without `-r`: the pipeline does not assume the species of the input genomes, so there is no fixed reference genome. CheckM2 uses a universal model. |
 | **Annotation (Bakta)** | No species fixed (no `--genus`/`--species`). | Bakta's databases are universal; fixing a species would only change the name in the output. |
-| **Layer B (BLASTp), urease** | 109 Swiss-Prot proteins from 21 Firmicutes species, one per gene and species (release 2026_03): UreA 18, UreB 19, UreC 19, UreD 12, UreE 16, UreF 11, UreG 12, UreH 1, UreI 1. Among them *Sporosarcina pasteurii*, *Lysinibacillus sphaericus*, *Bacillus subtilis*, *B. cereus*, *B. velezensis*, *Geobacillus kaustophilus*, *Halalkalibacterium halodurans*, plus *Staphylococcus*, *Streptococcus* and clostridia. | Same phylum as the example dataset, with verified function. *S. pasteurii* is the model Firmicutes urease; in the example, *L. sphaericus* shares S1's genus, and *Bacillus* and *Geobacillus* are close relatives of S2–S10. For genomes from another phylum, change the slice with `--query`. Deduplication took *S. aureus* from 94 entries down to 7 (one per gene). |
-| **Layer B (BLASTp), transport and alternative pathway** | 851 TrEMBL Firmicutes proteins, one per gene and species: UrtA 130, UrtB 139, UrtC 136, UrtD 137, UrtE 137 (141 species), `uca` 84 and `atzF` 88. Most represented genera: *Paenibacillus*, *Cohnella*, *Bacillus*, *Metabacillus*, *Geobacillus*. | They are the only Firmicutes carrying these genes in UniProt. `uca` and `atzF` are searched by gene name rather than EC number, because EC 3.5.1.54 also brings the KipI/KipA "allophanate hydrolases", which in *Bacillus* are the 5-oxoprolinase PxpB/PxpC. |
+| **Layer B (BLASTp), urease** | Reviewed (Swiss-Prot) Firmicutes entries selected by the default query, with one sequence per gene and species. | Curated entries provide reviewed urease references. The query and downloaded-set metadata are recorded in the provenance files; adjust `--query` for another taxonomic group. |
+| **Layer B (BLASTp), transport and alternative pathway** | UniProt entries for UrtA–E, `uca` and `atzF`, selected by exact gene name within the default query's taxonomic scope. | Searching by gene name narrows the alternative-pathway references. Unreviewed hits are identified as TrEMBL and do not score; EC 3.5.1.54 can also match KipI/KipA proteins from 5-oxoprolinase. |
 | **Layer C (Pfam)** | No species. | Family profiles built from alignments spanning many taxa. |
-| **Synteny** | Input strains only. | The goal is to compare operon organisation across the isolates. A strain with no urease is left off the map, and no locus is invented for it. |
-| **UreC phylogeny** | The strains' UreC + 19 reference UreC, one per Firmicutes species (including *S. pasteurii*, *B. subtilis*, *B. cereus*, *B. velezensis*, *G. kaustophilus* and *H. halodurans*) + outgroup: the UreC of *Klebsiella aerogenes* (P18314) and *Proteus mirabilis* (P17086). | IQ-TREE needs >= 4 sequences for bootstrap, and the references place the strains within the phylum. The outgroup are Gammaproteobacteria model ureases with solved structures, clearly outside Firmicutes; IQ-TREE roots the tree on them (`-o`). Can be turned off with `--phylo_include_refs false` and `--phylo_outgroup false`. |
+| **Synteny** | Input strains only. | The goal is to compare pathway-locus organisation across the isolates. Strains with no pathway anchor genes are left off the map; no locus is invented to include them. |
+| **UreC phylogeny** | UreC candidates, references in `urease_references.fasta`, and sequences in `urec_outgroup.fasta`. | The references provide taxonomic context; the Gammaproteobacteria outgroup roots the tree. IQ-TREE requires at least 4 sequences for bootstrap analysis. References and the outgroup can be disabled with `--phylo_include_refs false` and `--phylo_outgroup false`, respectively. |
 
 **Known limitations.**
 
-- **Unreviewed references for transport and the alternative pathway.** UrtA–E, `uca` and `atzF`
-  come from TrEMBL, which is annotated automatically, like Bakta. For these genes a BLASTp hit
-  confirms similarity to proteins annotated the same way, not verified function. That is why such
-  a hit is flagged (`blast_ref_status = unreviewed`, outlined "L" badge in the report) and scores
-  nothing — see [Candidate screening score](#candidate-screening-score).
-- **Composition bias in transport.** *Paenibacillus* accounts for almost half of the UrtA–E
-  references, because it is the Firmicutes genus with the most genomes carrying the operon.
-- **Few species with reviewed urease.** Deduplication removed the *S. aureus* redundancy but adds
-  no species: Swiss-Prot holds reviewed urease from only 21 Firmicutes species.
+- **Hits to unreviewed references.** TrEMBL contains automatically annotated entries. A BLASTp hit
+  to one of these references indicates similarity, but does not confirm function. The hit is marked
+  `blast_ref_status = unreviewed`, flagged in the report, and scores nothing — see
+  [Candidate screening score](#candidate-screening-score).
+- **High TrEMBL threshold.** At the default 80 % identity threshold, more distant homologs may not
+  pass the filter and may rely on Bakta and Pfam evidence.
+- **Taxonomic coverage of references.** The set's composition depends on UniProt coverage and
+  curation. Lineages with few reviewed references may rely more on Bakta and Pfam evidence.
 - **The presence/absence matrix reads Bakta only.** It uses the annotated gene and product; a
   protein found only by BLASTp or Pfam changes the confidence in the candidate table but does not
   mark presence in the matrix.

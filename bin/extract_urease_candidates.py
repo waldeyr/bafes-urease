@@ -28,6 +28,34 @@ EN-US: Scoring — each layer is worth 1 point, except a BLASTp whose best hit i
        reference (TrEMBL): it is recorded (blast_ref_status = unreviewed) but is worth 0,
        because TrEMBL annotation is automatic like Bakta's and is not independent evidence.
        >= 2 points = High; 1 = Medium; 0 with a TrEMBL hit = Low.
+
+PT-BR: Filtros antes da pontuacao, contra o ruido das referencias TrEMBL — UrtD/UrtE sao a
+       ATPase de um transportador ABC, e a 30 % de identidade casavam com toda ATPase ABC do
+       genoma: (1) acerto contra TrEMBL so vale com identidade >= --trembl-min-identity;
+       (2) UrtB-E so valem a ate --urt-operon-window CDS de uma UrtA no mesmo contig. O que
+       cai fica registrado em --filtered-tsv, com o motivo.
+EN-US: Filters before scoring, against the TrEMBL reference noise — UrtD/UrtE are the ATPase
+       of an ABC transporter, and at 30 % identity they matched every ABC ATPase in the
+       genome: (1) a hit on TrEMBL only counts at identity >= --trembl-min-identity;
+       (2) UrtB-E only count within --urt-operon-window CDS of a UrtA on the same contig.
+       Whatever is dropped is recorded in --filtered-tsv, with the reason.
+
+PT-BR: Familia KipI/PxpABC (5-oxoprolinase) — o perfil CT_C_D (PF02682, antigo AHS1,
+       "allophanate hydrolase subunit 1") NAO marca alofanato hidrolase: a AtzF verdadeira e
+       da familia amidase (PF01425). CT_C_D aparece sozinho na PxpB/KipI (~250 aa), presente
+       em toda estirpe, e junto da biotina carboxilase na urea carboxilase (~1.200 aa). O
+       Bakta ainda da as PxpB/PxpC o produto "Allophanate hydrolase" (nome do cluster
+       UniRef), o que marcou ah=1 falso em S5. Por isso: (3) genes pxpA/B/C e kipI/A nao
+       entram na Camada A (motivo kipI_family); (4) CT_C_D so pontua na Camada C se a mesma
+       proteina tiver dominio de biotina carboxilase (motivo ct_c_d_without_bc).
+EN-US: KipI/PxpABC family (5-oxoprolinase) — the CT_C_D profile (PF02682, formerly AHS1,
+       "allophanate hydrolase subunit 1") does NOT mark allophanate hydrolase: the true AtzF
+       belongs to the amidase family (PF01425). CT_C_D sits alone in PxpB/KipI (~250 aa),
+       present in every strain, and next to biotin carboxylase in urea carboxylase
+       (~1,200 aa). Bakta also gives PxpB/PxpC the product "Allophanate hydrolase" (the
+       UniRef cluster name), which scored a false ah=1 in S5. Hence: (3) pxpA/B/C and kipI/A
+       genes do not enter Layer A (reason kipI_family); (4) CT_C_D only scores in Layer C if
+       the same protein carries a biotin carboxylase domain (reason ct_c_d_without_bc).
 """
 
 import sys
@@ -46,6 +74,17 @@ BLAST_MAX_EVALUE = 1e-5
 BLAST_MIN_IDENTITY = 30.0
 BLAST_MIN_COVERAGE = 50.0
 HMMER_MIN_DOMAIN_SCORE = 20.0
+
+# PT-BR: Padroes dos filtros contra o ruido do TrEMBL (ver docstring).
+# EN-US: Defaults of the filters against TrEMBL noise (see docstring).
+TREMBL_MIN_IDENTITY = 80.0
+URT_OPERON_WINDOW = 5
+URT_ANCHOR = "urta"
+URT_PARTNERS = {"urtb", "urtc", "urtd", "urte"}
+
+# PT-BR: Familia KipI/PxpABC (5-oxoprolinase), fora da via alternativa (ver docstring).
+# EN-US: KipI/PxpABC family (5-oxoprolinase), outside the alternative route (see docstring).
+KIPI_FAMILY_GENES = {"pxpa", "pxpb", "pxpc", "kipi", "kipa"}
 
 # PT-BR: Perfis Pfam que constituem evidencia de urease (Camada C). Acessoes sem versao.
 #        PF01979 (Amidohydro_1) foi deixado de fora de proposito: e o acerto de maior score
@@ -71,8 +110,17 @@ UREASE_PFAM_ACCESSIONS = {
     "PF01730": "UreF",
     "PF02492": "cobW (UreG/COG0523)",
     "PF03824": "NicO (UreH, transporte de niquel / nickel transport)",
-    "PF02682": "CT_C_D (allophanate hydrolase)",
+    "PF02682": "CT_C_D (carboxiltransferase; so com biotina carboxilase = urea carboxilase "
+               "/ carboxyltransferase; only with biotin carboxylase = urea carboxylase)",
 }
+
+# PT-BR: CT_C_D so vale com um destes dominios de biotina carboxilase na mesma proteina —
+#        e a arquitetura da urea carboxilase. Sozinho, CT_C_D e a PxpB/KipI.
+# EN-US: CT_C_D only counts with one of these biotin carboxylase domains on the same
+#        protein — the urea carboxylase architecture. Alone, CT_C_D is PxpB/KipI.
+CT_C_D_ACCESSION = "PF02682"
+BIOTIN_CARBOXYLASE_PFAM = {"PF00289", "PF02786", "PF02785"}
+BIOTIN_CARBOXYLASE_NAMES = {"biotin_carb_n", "cpsase_l_d2", "biotin_carb_c"}
 
 # PT-BR: Reserva para o caso de a coluna de acessao vir como '-' no domtblout.
 # EN-US: Fallback for when the accession column comes as '-' in the domtblout.
@@ -93,19 +141,42 @@ BLAST_COLUMNS = ["qseqid", "sseqid", "pident", "length", "qstart", "qend",
                  "qlen", "slen", "evalue", "bitscore"]
 
 
-def parse_bakta_json(json_file):
+def load_bakta_features(json_file):
+    """PT-BR: Features do JSON do Bakta. / EN-US: Features from the Bakta JSON."""
+    if not os.path.exists(json_file):
+        return []
+    with open(json_file, 'r', encoding='utf-8') as f:
+        return json.load(f).get('features', [])
+
+
+def cds_positions(features):
     """
-    PT-BR: Analisa saida JSON do Bakta filtrando genes e termos EC alvos (Camada A).
-    EN-US: Parses Bakta JSON output filtering target genes and EC numbers (Layer A).
+    PT-BR: Ordem genica: {locus ou id: (contig, indice da CDS no contig)}, com as CDS de
+           cada contig ordenadas pela posicao inicial.
+    EN-US: Gene order: {locus or id: (contig, index of the CDS on the contig)}, with each
+           contig's CDS sorted by start position.
+    """
+    by_contig = {}
+    for feat in features:
+        if feat.get('type') == 'cds':
+            by_contig.setdefault(feat.get('sequence') or '', []).append(feat)
+    positions = {}
+    for contig, feats in by_contig.items():
+        for index, feat in enumerate(sorted(feats, key=lambda f: f.get('start') or 0)):
+            for key in (feat.get('locus'), feat.get('id')):
+                if key:
+                    positions[key] = (contig, index)
+    return positions
+
+
+def parse_bakta_json(features, rejected=None):
+    """
+    PT-BR: Filtra das features do Bakta os genes e termos EC alvos (Camada A). Genes da
+           familia KipI/PxpABC saem mesmo com "allophanate" no produto e vao para `rejected`.
+    EN-US: Filters target genes and EC numbers out of the Bakta features (Layer A). KipI/PxpABC
+           family genes are dropped even with "allophanate" in the product, into `rejected`.
     """
     candidates = []
-    if not os.path.exists(json_file):
-        return candidates
-
-    with open(json_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    features = data.get('features', [])
     for feat in features:
         gene = feat.get('gene') or ''
         product = feat.get('product') or ''
@@ -125,6 +196,13 @@ def parse_bakta_json(json_file):
         elif any(term in product.lower() for term in ("urease", "urea", "allophanate")):
             is_match = True
 
+        if is_match and str(gene).lower() in KIPI_FAMILY_GENES:
+            if rejected is not None:
+                rejected.append({'feature_id': feat_id, 'layer': 'bakta',
+                                 'reference': f"{gene}: {product}", 'identity': '',
+                                 'reason': 'kipI_family'})
+            continue
+
         if is_match:
             candidates.append({
                 'feature_id': feat_id,
@@ -136,6 +214,12 @@ def parse_bakta_json(json_file):
     return candidates
 
 
+def reference_gene(sseqid):
+    """PT-BR: Gene da referencia (2o campo). / EN-US: Reference gene (2nd field)."""
+    fields = str(sseqid).split('|')
+    return fields[1] if len(fields) >= 6 and fields[0] == 'ref' else ''
+
+
 def reference_status(sseqid):
     """PT-BR: Status de revisao da referencia. / EN-US: Review status of the reference."""
     fields = str(sseqid).split('|')
@@ -144,10 +228,14 @@ def reference_status(sseqid):
     return REF_STATUS_UNKNOWN
 
 
-def parse_blast_tsv(blast_file):
+def parse_blast_tsv(blast_file, trembl_min_identity=TREMBL_MIN_IDENTITY, rejected=None):
     """
-    PT-BR: Extrai IDs de consulta do BLASTp que passam nos limiares (Camada B).
-    EN-US: Extracts BLASTp query IDs that pass the thresholds (Layer B).
+    PT-BR: Extrai IDs de consulta do BLASTp que passam nos limiares (Camada B). Acertos
+           contra TrEMBL abaixo de trembl_min_identity saem; quando a proteina fica sem
+           acerto algum, o melhor deles vai para `rejected`.
+    EN-US: Extracts BLASTp query IDs that pass the thresholds (Layer B). Hits on TrEMBL
+           below trembl_min_identity are dropped; when the protein is left with no hit at
+           all, the best of them goes into `rejected`.
     """
     hits = {}
     if not (os.path.exists(blast_file) and os.path.getsize(blast_file) > 0):
@@ -170,12 +258,33 @@ def parse_blast_tsv(blast_file):
               f"(E<={BLAST_MAX_EVALUE}, id>={BLAST_MIN_IDENTITY}%, cov>={BLAST_MIN_COVERAGE}%) "
               f"/ hit(s) dropped by thresholds.")
 
+    unreviewed = kept['sseqid'].map(reference_status) == REF_STATUS_UNREVIEWED
+    weak_trembl = kept[unreviewed & (kept['pident'] < trembl_min_identity)]
+    kept = kept[~(unreviewed & (kept['pident'] < trembl_min_identity))]
+    if len(weak_trembl):
+        print(f"  [FILTRO/FILTER] BLASTp: {len(weak_trembl)} acerto(s) contra TrEMBL abaixo de "
+              f"{trembl_min_identity:g}% de identidade descartado(s) / TrEMBL hit(s) below "
+              f"{trembl_min_identity:g}% identity dropped.")
+        if rejected is not None:
+            surviving = set(kept['qseqid'].astype(str))
+            seen = set()
+            for _, row in weak_trembl.sort_values('bitscore', ascending=False).iterrows():
+                qid = str(row['qseqid'])
+                if qid in surviving or qid in seen:
+                    continue
+                seen.add(qid)
+                rejected.append({'feature_id': qid, 'layer': 'blast',
+                                 'reference': str(row['sseqid']),
+                                 'identity': round(float(row['pident']), 1),
+                                 'reason': 'trembl_identity'})
+
     # PT-BR: Guarda o melhor acerto por consulta / EN-US: Keep the best hit per query
     for _, row in kept.sort_values('bitscore', ascending=False).iterrows():
         qid = str(row['qseqid'])
         if qid not in hits:
             hits[qid] = {
                 'subject': str(row['sseqid']),
+                'ref_gene': reference_gene(row['sseqid']),
                 'status': reference_status(row['sseqid']),
                 'identity': float(row['pident']),
                 'coverage': float(row['coverage']),
@@ -184,7 +293,7 @@ def parse_blast_tsv(blast_file):
     return hits
 
 
-def parse_hmmer_tbl(hmmer_file):
+def parse_hmmer_tbl(hmmer_file, rejected=None):
     """
     PT-BR: Extrai IDs de consulta do HMMER3 domtblout acima do score de dominio (Camada C).
     EN-US: Extracts HMMER3 domtblout query IDs above the domain score (Layer C).
@@ -195,8 +304,15 @@ def parse_hmmer_tbl(hmmer_file):
     EN-US: In hmmscan's domtblout the query (protein) is column 4, the profile's Pfam
            accession is column 2 and the domain score is column 14. The previous code read
            column 1, the Pfam profile name — which is why Layer C never matched anything.
+
+    PT-BR: CT_C_D so entra se a proteina tambem tiver biotina carboxilase (ver docstring do
+           modulo); senao vai para `rejected`.
+    EN-US: CT_C_D only enters if the protein also carries biotin carboxylase (see the module
+           docstring); otherwise it goes into `rejected`.
     """
     hits = {}
+    ct_c_d_hits = {}
+    with_biotin_carboxylase = set()
     if not (os.path.exists(hmmer_file) and os.path.getsize(hmmer_file) > 0):
         return hits
 
@@ -217,6 +333,13 @@ def parse_hmmer_tbl(hmmer_file):
             except ValueError:
                 continue
 
+            # PT-BR: A biotina carboxilase esta fora da lista, entao e lida antes do filtro.
+            # EN-US: Biotin carboxylase is off the list, so it is read before the filter.
+            if domain_score >= HMMER_MIN_DOMAIN_SCORE and (
+                    accession in BIOTIN_CARBOXYLASE_PFAM
+                    or profile.lower() in BIOTIN_CARBOXYLASE_NAMES):
+                with_biotin_carboxylase.add(query)
+
             # PT-BR: So dominios de urease contam como evidencia — o hmmscan roda contra o
             #        Pfam-A inteiro, entao sem este filtro a triagem admite o proteoma todo.
             # EN-US: Only urease domains count as evidence — hmmscan runs against the whole
@@ -229,8 +352,22 @@ def parse_hmmer_tbl(hmmer_file):
                 below += 1
                 continue
 
-            if query not in hits or domain_score > hits[query]['score']:
-                hits[query] = {'profile': profile, 'score': domain_score}
+            target = ct_c_d_hits if (accession == CT_C_D_ACCESSION
+                                     or profile.lower() == "ct_c_d") else hits
+            if query not in target or domain_score > target[query]['score']:
+                target[query] = {'profile': profile, 'score': domain_score}
+
+    lone_ct_c_d = 0
+    for query, hit in sorted(ct_c_d_hits.items()):
+        if query not in with_biotin_carboxylase:
+            lone_ct_c_d += 1
+            if rejected is not None:
+                rejected.append({'feature_id': query, 'layer': 'hmmer',
+                                 'reference': f"{hit['profile']} ({hit['score']:g})",
+                                 'identity': '', 'reason': 'ct_c_d_without_bc'})
+            continue
+        if query not in hits or hit['score'] > hits[query]['score']:
+            hits[query] = hit
 
     if off_target:
         print(f"  [FILTRO/FILTER] HMMER: {off_target} dominio(s) de perfis fora da lista de "
@@ -238,6 +375,10 @@ def parse_hmmer_tbl(hmmer_file):
     if below:
         print(f"  [FILTRO/FILTER] HMMER: {below} dominio(s) de urease abaixo do score "
               f"{HMMER_MIN_DOMAIN_SCORE} descartado(s) / urease domain(s) below score dropped.")
+    if lone_ct_c_d:
+        print(f"  [FILTRO/FILTER] HMMER: {lone_ct_c_d} proteina(s) com CT_C_D sem biotina "
+              f"carboxilase (PxpB/KipI) descartada(s) / protein(s) with CT_C_D but no biotin "
+              f"carboxylase (PxpB/KipI) dropped.")
     return hits
 
 
@@ -248,11 +389,23 @@ def main():
     parser.add_argument("--blast-tsv", required=True, help="BLASTp TSV output")
     parser.add_argument("--hmmer-tbl", required=True, help="HMMER domtblout")
     parser.add_argument("--out-tsv", required=True, help="Caminho do TSV de saida / Output TSV path")
+    parser.add_argument("--filtered-tsv", default=None,
+                        help="TSV com a evidencia descartada pelos filtros / TSV of the evidence "
+                             "dropped by the filters (default: <out-tsv sem / without "
+                             "_candidates.tsv>_filtered.tsv)")
+    parser.add_argument("--trembl-min-identity", type=float, default=TREMBL_MIN_IDENTITY,
+                        help="Identidade minima (%%) para acertos contra TrEMBL / Minimum identity "
+                             "(%%) for hits on TrEMBL")
+    parser.add_argument("--urt-operon-window", type=int, default=URT_OPERON_WINDOW,
+                        help="Distancia maxima, em CDS, de UrtB-E ate uma UrtA / Maximum distance, "
+                             "in CDS, from UrtB-E to a UrtA")
     args = parser.parse_args()
 
-    bakta_cands = parse_bakta_json(args.bakta_json)
-    blast_hits = parse_blast_tsv(args.blast_tsv)
-    hmmer_hits = parse_hmmer_tbl(args.hmmer_tbl)
+    features = load_bakta_features(args.bakta_json)
+    rejected = []
+    bakta_cands = parse_bakta_json(features, rejected)
+    blast_hits = parse_blast_tsv(args.blast_tsv, args.trembl_min_identity, rejected)
+    hmmer_hits = parse_hmmer_tbl(args.hmmer_tbl, rejected)
 
     # PT-BR: Indexa os candidatos do Bakta pelos dois identificadores possiveis — o lookup
     #        por 'alt_id' e defensivo, caso BLASTp ou HMMER tragam o id em vez do locus.
@@ -277,10 +430,48 @@ def main():
     canonical_ids = {c['feature_id'] for c in bakta_cands if c['feature_id']}
     all_feat_ids = canonical_ids | set(blast_hits.keys()) | set(hmmer_hits.keys())
 
+    # PT-BR: Contexto de operon: UrtB-E so valem perto de uma UrtA (Bakta ou BLASTp).
+    # EN-US: Operon context: UrtB-E only count near a UrtA (Bakta or BLASTp).
+    positions = cds_positions(features)
+
+    def urt_roles(fid):
+        b_info = by_id.get(fid)
+        blast = blast_hits.get(fid)
+        return ((b_info['gene'].lower() if b_info else ''),
+                (blast['ref_gene'].lower() if blast else ''))
+
+    anchors = {}
+    for fid in all_feat_ids:
+        if URT_ANCHOR in urt_roles(fid) and fid in positions:
+            contig, index = positions[fid]
+            anchors.setdefault(contig, []).append(index)
+
+    def near_urta(fid):
+        if fid not in positions:
+            return False
+        contig, index = positions[fid]
+        return any(abs(index - a) <= args.urt_operon_window for a in anchors.get(contig, []))
+
+    dropped_bakta = set()
+    for fid in sorted(all_feat_ids):
+        bakta_role, blast_role = urt_roles(fid)
+        if not (bakta_role in URT_PARTNERS or blast_role in URT_PARTNERS) or near_urta(fid):
+            continue
+        if bakta_role in URT_PARTNERS:
+            dropped_bakta.add(fid)
+            rejected.append({'feature_id': fid, 'layer': 'bakta',
+                             'reference': f"{by_id[fid]['gene']}: {by_id[fid]['product']}",
+                             'identity': '', 'reason': 'urt_without_urtA'})
+        if blast_role in URT_PARTNERS:
+            blast = blast_hits.pop(fid)
+            rejected.append({'feature_id': fid, 'layer': 'blast', 'reference': blast['subject'],
+                             'identity': round(blast['identity'], 1),
+                             'reason': 'urt_without_urtA'})
+
     results = []
     for fid in sorted(all_feat_ids):
         b_info = by_id.get(fid)
-        in_bakta = b_info is not None
+        in_bakta = b_info is not None and fid not in dropped_bakta
         blast = blast_hits.get(fid)
         hmmer = hmmer_hits.get(fid)
 
@@ -331,11 +522,20 @@ def main():
     df_out = pd.DataFrame(results, columns=columns)
     df_out.to_csv(args.out_tsv, sep='\t', index=False)
 
+    filtered_tsv = args.filtered_tsv or (
+        args.out_tsv[:-len('_candidates.tsv')] + '_filtered.tsv'
+        if args.out_tsv.endswith('_candidates.tsv') else args.out_tsv + '.filtered.tsv')
+    pd.DataFrame([dict(strain=args.strain, **r) for r in rejected],
+                 columns=['strain', 'feature_id', 'layer', 'reference', 'identity', 'reason']
+                 ).to_csv(filtered_tsv, sep='\t', index=False)
+
     high = sum(1 for r in results if r['confidence'] == "Alta/High")
     low = sum(1 for r in results if r['confidence'] == "Baixa/Low")
     print(f"[OK] Candidatos consolidados salvos em / Consolidated candidates saved to: {args.out_tsv} "
           f"({len(df_out)} candidatos, {high} de alta confianca, {low} de baixa (so TrEMBL) "
           f"/ candidates, {high} high confidence, {low} low (TrEMBL only))")
+    print(f"[OK] Evidencia descartada pelos filtros / Evidence dropped by the filters: "
+          f"{len(rejected)} -> {filtered_tsv}")
     return 0
 
 

@@ -82,6 +82,13 @@ PRODUCT_PATTERNS = {
 COMPILED_PATTERNS = {g: [re.compile(p, re.IGNORECASE) for p in pats]
                      for g, pats in PRODUCT_PATTERNS.items()}
 
+# PT-BR: Idêntico a merge_strain_results.py: PxpB/PxpC (família KipI) que o Bakta chama de
+#        "Allophanate hydrolase" não contam como 'uc'/'ah'.
+# EN-US: Identical to merge_strain_results.py: PxpB/PxpC (KipI family) that Bakta names
+#        "Allophanate hydrolase" do not count as 'uc'/'ah'.
+KIPI_FAMILY_GENES = {'pxpa', 'pxpb', 'pxpc', 'kipi', 'kipa'}
+PRODUCT_EXCLUDED_GENES = {'uc': KIPI_FAMILY_GENES, 'ah': KIPI_FAMILY_GENES}
+
 # PT-BR: Perfis Pfam curados da camada HMMER (extract_urease_candidates.py)
 # EN-US: Curated Pfam profiles of the HMMER layer (extract_urease_candidates.py)
 UREASE_PFAM = {
@@ -89,6 +96,10 @@ UREASE_PFAM = {
     'PF01774': 'UreD', 'PF02814': 'UreE_N', 'PF05194': 'UreE_C', 'PF01730': 'UreF',
     'PF02492': 'cobW', 'PF03824': 'NicO', 'PF02682': 'CT_C_D',
 }
+# PT-BR: CT_C_D só chega aos candidatos dentro de uma urea carboxilase (com biotina
+#        carboxilase); a PxpB isolada é descartada em extract_urease_candidates.py.
+# EN-US: CT_C_D only reaches the candidates inside a urea carboxylase (with biotin
+#        carboxylase); the lone PxpB is dropped in extract_urease_candidates.py.
 CORE_UREASE_PROFILES = {'Urease_alpha', 'Urease_beta', 'Urease_gamma',
                         'UreD', 'UreE_N', 'UreE_C', 'UreF'}
 
@@ -1244,6 +1255,8 @@ def classify_feature(feature, candidate_tags):
     for target, patterns in COMPILED_PATTERNS.items():
         if gene.lower() == target.lower():
             return 'urease'
+        if gene.lower() in PRODUCT_EXCLUDED_GENES.get(target, set()):
+            continue
         for pattern in patterns:
             if pattern.search(product):
                 return 'urease'
@@ -1344,6 +1357,8 @@ def build_context(results, accessions_path, local_genomes_path, out_dir, warn):
     matrix_rows = read_tsv(os.path.join(results, '04_summary', 'urease_presence_absence.tsv'))
     ctx['matrix'] = sorted(matrix_rows, key=lambda r: natural_key(r.get('strain', '')))
     ctx['blast'], ctx['blast_total'] = read_blast(results, strains)
+    ctx['filtered'] = [row for code in strains for row in read_tsv(
+        os.path.join(results, '03_candidates', code, '%s_filtered.tsv' % code))]
     ctx['locus_status'] = read_locus_status(results, strains)
     ctx['loci'] = read_loci(results, strains)
     ctx['phylo_status'] = read_text(os.path.join(results, '06_phylogeny', 'phylogeny_status.txt')).strip()
@@ -1815,6 +1830,45 @@ def section_annotation(ctx):
                  'Predicted proteins per genome (Bakta v1.12.0, DB v6.0)'), body)
 
 
+def filtered_body(ctx):
+    """
+    PT-BR: Resumo dos *_filtered.tsv: o que os filtros contra o ruído do TrEMBL e contra a
+           família KipI/PxpABC tiraram.
+    EN-US: Summary of the *_filtered.tsv files: what the TrEMBL-noise and KipI/PxpABC-family
+           filters removed.
+    """
+    reasons = Counter(row.get('reason', '') for row in ctx['filtered'])
+    labels = {
+        'trembl_identity': ('BLASTp contra TrEMBL abaixo de trembl_min_identity (padrão 80 %)',
+                            'BLASTp on TrEMBL below trembl_min_identity (default 80 %)'),
+        'urt_without_urtA': ('UrtB–E sem UrtA no mesmo contig a até urt_operon_window CDS (padrão 5)',
+                             'UrtB–E with no UrtA on the same contig within urt_operon_window CDS (default 5)'),
+        'kipI_family': ('Bakta: gene pxpA/B/C ou kipI/A (5-oxoprolinase), mesmo com produto '
+                        '"Allophanate hydrolase"',
+                        'Bakta: pxpA/B/C or kipI/A gene (5-oxoprolinase), even with product '
+                        '"Allophanate hydrolase"'),
+        'ct_c_d_without_bc': ('HMMER: CT_C_D sem biotina carboxilase na mesma proteína (PxpB/KipI)',
+                              'HMMER: CT_C_D with no biotin carboxylase on the same protein (PxpB/KipI)'),
+    }
+    items = '<ul class="checks">%s</ul>' % ''.join(
+        '<li><span class="dot warn"></span>%s<span class="muted"> · %s</span></li>'
+        % (T(labels.get(reason, (reason, reason))), esc(num(count)))
+        for reason, count in reasons.most_common()) if reasons else empty_note()
+    return items + '<p class="note">%s</p>' % T((
+        'UrtD e UrtE são a ATPase de um transportador ABC; a 30 %% de identidade, as referências '
+        'TrEMBL casavam com toda ATPase ABC do genoma. A PxpB/KipI (5-oxoprolinase) tem o domínio '
+        'CT_C_D e o Bakta a chama de "Allophanate hydrolase", o que marcava ah=1 falso; ela sai da '
+        'Camada A e da Camada C. Cada descarte, com referência, identidade e '
+        'motivo, está em 03_candidates/{estirpe}/{estirpe}_filtered.tsv (%s linhas no total).'
+        % num(len(ctx['filtered'])),
+        'UrtD and UrtE are the ATPase of an ABC transporter; at 30 %% identity, the TrEMBL references '
+        'matched every ABC ATPase in the genome. PxpB/KipI (5-oxoprolinase) carries the CT_C_D domain '
+        'and Bakta names it "Allophanate hydrolase", which scored a false ah=1; it leaves Layers A '
+        'and C. Each drop, with reference, identity and reason, is in '
+        '03_candidates/{strain}/{strain}_filtered.tsv (%s rows in total).'
+        % num(len(ctx['filtered']))))
+
+
 def section_screening(ctx):
     strains = ctx['strains']
     proteins = sum(s.get('proteins', 0) for s in strains.values())
@@ -1913,9 +1967,13 @@ def section_screening(ctx):
                 '<div><h4>%s</h4><p>%s</p></div></div>') % (
         T(('Camada 1 · Bakta', 'Layer 1 · Bakta')),
         T(('Símbolo do gene na lista alvo (ureA–ureH, urtA, uc, ah), número EC 3.5.1.5 / '
-           '6.3.4.6 / 3.5.1.54, ou produto contendo urease, urea ou allophanate.',
+           '6.3.4.6 / 3.5.1.54, ou produto contendo urease, urea ou allophanate. Genes '
+           'pxpA/B/C e kipI/A (5-oxoprolinase) ficam de fora mesmo com produto '
+           '"Allophanate hydrolase".',
            'Gene symbol in the target list (ureA–ureH, urtA, uc, ah), EC number 3.5.1.5 / '
-           '6.3.4.6 / 3.5.1.54, or product containing urease, urea or allophanate.')),
+           '6.3.4.6 / 3.5.1.54, or product containing urease, urea or allophanate. pxpA/B/C '
+           'and kipI/A genes (5-oxoprolinase) stay out even with product '
+           '"Allophanate hydrolase".')),
         T(('Camada 2 · BLASTp', 'Layer 2 · BLASTp')),
         T(('Alinhamento contra as referências do UniProt com E ≤ 1e-5, identidade '
            '≥ 30% e cobertura da consulta ≥ 50%. Só pontua se o melhor acerto for Swiss-Prot.',
@@ -1923,9 +1981,11 @@ def section_screening(ctx):
            '≥ 30% and query coverage ≥ 50%. It scores only when the best hit is Swiss-Prot.')),
         T(('Camada 3 · HMMER', 'Layer 3 · HMMER')),
         T(('hmmscan contra o Pfam-A completo, retendo apenas domínios com score ≥ 20 cujo '
-           'perfil esta na lista curada de dez acessos da via da urease.',
+           'perfil esta na lista curada de dez acessos da via da urease. CT_C_D só conta se a '
+           'mesma proteína tiver biotina carboxilase (urea carboxilase); sozinho é a PxpB.',
            'hmmscan against the full Pfam-A, keeping only domains with score ≥ 20 whose '
-           'profile is in the curated list of ten urease-pathway accessions.')))
+           'profile is in the curated list of ten urease-pathway accessions. CT_C_D only counts '
+           'if the same protein carries biotin carboxylase (urea carboxylase); alone it is PxpB.')))
 
     return (card(('Como um genoma inteiro vira dezesseis proteínas',
                   'How a whole genome becomes sixteen proteins'), criteria,
@@ -1935,7 +1995,9 @@ def section_screening(ctx):
             + card(('Rendimento de cada camada, isoladamente',
                     'Yield of each layer, on its own'), lanes)
             + card(('Quais camadas sustentam cada candidato', 'Which layers support each candidate'),
-                   combo))
+                   combo)
+            + card(('Evidência descartada antes da pontuação', 'Evidence dropped before scoring'),
+                   filtered_body(ctx)))
 
 
 def section_matrix(ctx):
@@ -2158,17 +2220,27 @@ def section_pfam(ctx):
         })
     chart = hbar_chart(items, ('candidatos', 'candidates'), label_width=150)
     chart += legend([('var(--series-1)', ('domínio estrutural da urease', 'urease structural domain')),
-                     ('var(--series-2)', ('domínio acessório ou de metalochaperona',
-                                          'accessory or metallochaperone domain'))])
+                     ('var(--series-2)', ('domínio acessório, de metalochaperona ou da via alternativa',
+                                          'accessory, metallochaperone or alternative-route domain'))])
     note = ('<p class="note">%s</p>' % T((
-        'cobW e CT_C_D são perfis de metalochaperonas ligadas ao cobalto e ao níquel. Eles estão '
-        'na lista curada porque a maturação da urease depende da inserção de níquel, mas sozinhos '
-        'não provam função de urease — por isso quase todo candidato apoiado apenas por eles '
-        'fica com confiança média. Nenhum deles é âncora de locus em extract_urease_locus.py.',
-        'cobW and CT_C_D are cobalt- and nickel-linked metallochaperone profiles. They are in the '
-        'curated list because urease maturation depends on nickel insertion, but on their own they '
-        'do not prove urease function — which is why nearly every candidate supported only by '
-        'them ends up at medium confidence. Neither is a locus anchor in extract_urease_locus.py.')))
+        'cobW é o perfil das metalochaperonas de cobalto e níquel (COG0523, inclui UreG): a '
+        'maturação da urease depende da inserção de níquel, mas sozinho ele não prova função de '
+        'urease. CT_C_D (PF02682) é um domínio de carboxiltransferase. O antigo nome Pfam, AHS1 '
+        '("allophanate hydrolase subunit 1"), engana: a alofanato hidrolase verdadeira (AtzF) é da '
+        'família amidase. CT_C_D aparece sozinho na PxpB/KipI, a 5-oxoprolinase presente em toda '
+        'estirpe, e junto da biotina carboxilase na urea carboxilase. Por isso só conta nesse '
+        'segundo caso. Antes dessa regra, a PxpB de S5, que o Bakta chama de "Allophanate '
+        'hydrolase", chegava a confiança alta e marcava ah=1. Nenhum dos dois perfis é âncora de '
+        'locus em extract_urease_locus.py.',
+        'cobW is the cobalt/nickel metallochaperone profile (COG0523, includes UreG): urease '
+        'maturation depends on nickel insertion, but on its own it does not prove urease function. '
+        'CT_C_D (PF02682) is a carboxyltransferase domain. Its old Pfam name, AHS1 ("allophanate '
+        'hydrolase subunit 1"), is misleading: the true allophanate hydrolase (AtzF) belongs to the '
+        'amidase family. CT_C_D sits alone in PxpB/KipI, the 5-oxoprolinase present in every '
+        'strain, and next to biotin carboxylase in urea carboxylase. That is why it only counts in '
+        'the second case. Before this rule, the S5 PxpB, which Bakta names "Allophanate '
+        'hydrolase", reached high confidence and scored ah=1. Neither profile is a locus anchor in '
+        'extract_urease_locus.py.')))
     return card(('Distribuição dos perfis Pfam entre os candidatos',
                  'Distribution of Pfam profiles across the candidates'), chart + note)
 
@@ -2391,6 +2463,9 @@ def section_files(ctx):
             if name.startswith('.'):
                 continue
             full = os.path.join(root, name)
+            # PT-BR: O próprio relatório não se lista. / EN-US: The report does not list itself.
+            if os.path.abspath(full) == ctx['out_path']:
+                continue
             relative = os.path.relpath(full, results)
             top = relative.split(os.sep)[0] if os.sep in relative else '.'
             groups.setdefault(top, []).append((relative, os.path.getsize(full)))
@@ -2828,7 +2903,7 @@ def main():
                         help='Diretório de resultados do pipeline / Pipeline results directory')
     parser.add_argument('--out', default=None,
                         help='Arquivo HTML de saída / Output HTML file '
-                             '(padrao / default: <results>/../report.html)')
+                             '(padrao / default: <results>/index.html)')
     parser.add_argument('--accessions', default=None,
                         help='data/accessions.tsv (opcional, só para o acesso GenBank / '
                              'optional, only for the GenBank accession)')
@@ -2847,7 +2922,7 @@ def main():
         return 1
 
     out_path = os.path.abspath(args.out) if args.out else \
-        os.path.join(os.path.dirname(results), 'report.html')
+        os.path.join(results, 'index.html')
     out_dir = os.path.dirname(out_path) or '.'
     if not os.path.isdir(out_dir):
         print('[ERRO/ERROR] Diretório de saída inexistente / Output directory not found: %s' % out_dir)
@@ -2874,6 +2949,7 @@ def main():
         print('[AVISO/WARNING] %s' % message)
 
     ctx = build_context(results, accessions, local_genomes, out_dir, warn)
+    ctx['out_path'] = out_path
     ctx['title'] = (args.title if args.title else
                     ('Urease em Bacillales: mineração genômica de %s estirpes'
                      % num(len(ctx['strains'])),

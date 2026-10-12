@@ -29,8 +29,7 @@ __pycache__/
 # Sistema operacional / OS
 .DS_Store
 .claude/*
-results_lisina.zip
-results_lisina/report.html
+results_*
 
 # Genomas locais (FASTA grandes) / Local genomes (large FASTA); data/local_genomes.tsv sim vai pro Git
 data/local_genomes/

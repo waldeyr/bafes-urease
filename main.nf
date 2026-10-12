@@ -67,6 +67,19 @@ params.synteny_flank_genes = 5
 //        urease operon and produce spurious regions.
 params.synteny_all_candidates = false
 
+// PT-BR: Filtros da triagem contra o ruído das referências TrEMBL (UrtD/UrtE são ATPases de
+//        ABC e, a 30 % de identidade, casavam com toda ATPase ABC do genoma). Acerto contra
+//        TrEMBL só vale com identidade >= trembl_min_identity; UrtB-E só valem a até
+//        urt_operon_window CDS de uma UrtA no mesmo contig. O descartado vai para
+//        03_candidates/{strain}/{strain}_filtered.tsv.
+// EN-US: Screening filters against TrEMBL reference noise (UrtD/UrtE are ABC ATPases and,
+//        at 30 % identity, matched every ABC ATPase in the genome). A hit on TrEMBL only
+//        counts at identity >= trembl_min_identity; UrtB-E only count within
+//        urt_operon_window CDS of a UrtA on the same contig. What is dropped goes to
+//        03_candidates/{strain}/{strain}_filtered.tsv.
+params.trembl_min_identity = 80
+params.urt_operon_window = 5
+
 // PT-BR: Caminhos de banco entram no script de cada processo como texto bruto, e cada
 //        task roda a partir do seu próprio work dir — um valor relativo como "db/db"
 //        precisa ser resolvido contra o diretório de lançamento antes de ser escrito
@@ -284,6 +297,7 @@ process EXTRACT_CANDIDATES {
     tuple val(strain), path("${strain}.gbff"), emit: gbff_out
     path "${strain}_blast.tsv"
     path "${strain}_hmmer.tbl"
+    path "${strain}_filtered.tsv"
 
     script:
     def pfam_base = file(params.pfam_hmm).name
@@ -316,7 +330,10 @@ process EXTRACT_CANDIDATES {
         --bakta-json ${json_file} \\
         --blast-tsv ${strain}_blast.tsv \\
         --hmmer-tbl ${strain}_hmmer.tbl \\
-        --out-tsv ${strain}_candidates.tsv
+        --trembl-min-identity ${params.trembl_min_identity} \\
+        --urt-operon-window ${params.urt_operon_window} \\
+        --out-tsv ${strain}_candidates.tsv \\
+        --filtered-tsv ${strain}_filtered.tsv
     """
 }
 

@@ -40,11 +40,13 @@ from Bio import SeqIO
 #        "Medium" confidence, because the profile is diagnostic on its own.
 #
 # PT-BR: Repare que 'cobW' e 'CT_C_D' NAO estao aqui de proposito: sao dominios promiscuos
-#        (COG0523 e um dominio C-terminal generico) que aparecem espalhados pelo genoma,
-#        longe de qualquer operon de urease. Ancorar neles criaria regioes espurias.
+#        (COG0523; e a carboxiltransferase da PxpB/KipI, a 5-oxoprolinase presente em toda
+#        estirpe) que aparecem espalhados pelo genoma, longe de qualquer operon de urease.
+#        Ancorar neles criaria regioes espurias.
 # EN-US: Note that 'cobW' and 'CT_C_D' are deliberately absent: they are promiscuous domains
-#        (COG0523 and a generic C-terminal domain) scattered across the genome, far from any
-#        urease operon. Anchoring on them would create spurious regions.
+#        (COG0523; and the carboxyltransferase of PxpB/KipI, the 5-oxoprolinase present in
+#        every strain) scattered across the genome, far from any urease operon. Anchoring on
+#        them would create spurious regions.
 UREASE_ANCHOR_PROFILES = {
     "Urease_alpha",
     "Urease_beta",

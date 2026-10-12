@@ -48,6 +48,15 @@ PRODUCT_PATTERNS = {
 COMPILED_PATTERNS = {gene: [re.compile(p, re.IGNORECASE) for p in pats]
                      for gene, pats in PRODUCT_PATTERNS.items()}
 
+# PT-BR: O Bakta chama as PxpB/PxpC (5-oxoprolinase, familia KipI) de "Allophanate
+#        hydrolase" — foi isso que marcou ah=1 falso em S5. Para 'uc' e 'ah', o símbolo da
+#        família KipI vale mais que o produto e a linha nunca casa pelo padrão.
+# EN-US: Bakta names PxpB/PxpC (5-oxoprolinase, KipI family) "Allophanate hydrolase" — that
+#        is what scored a false ah=1 in S5. For 'uc' and 'ah', a KipI-family symbol outranks
+#        the product and the row never matches by pattern.
+KIPI_FAMILY_GENES = {'pxpa', 'pxpb', 'pxpc', 'kipi', 'kipa'}
+PRODUCT_EXCLUDED_GENES = {'uc': KIPI_FAMILY_GENES, 'ah': KIPI_FAMILY_GENES}
+
 
 def strain_from_filename(path):
     """
@@ -61,15 +70,20 @@ def strain_from_filename(path):
 def has_gene(sub_df, gene):
     """
     PT-BR: Presença = símbolo do gene igual (sem distinção de caixa) OU produto casando com
-           um dos padrões curados. Nunca substring do símbolo dentro do produto.
+           um dos padrões curados. Nunca substring do símbolo dentro do produto, e nunca
+           produto de gene da família KipI para 'uc'/'ah'.
     EN-US: Presence = gene symbol equal (case-insensitive) OR product matching one of the
-           curated patterns. Never a substring of the symbol inside the product.
+           curated patterns. Never a substring of the symbol inside the product, and never
+           the product of a KipI-family gene for 'uc'/'ah'.
     """
     for value in sub_df['gene']:
         if str(value).strip().lower() == gene.lower():
             return True
+    excluded = PRODUCT_EXCLUDED_GENES.get(gene, set())
     for pattern in COMPILED_PATTERNS.get(gene, []):
-        for value in sub_df['product']:
+        for symbol, value in zip(sub_df['gene'], sub_df['product']):
+            if str(symbol).strip().lower() in excluded:
+                continue
             if pattern.search(str(value)):
                 return True
     return False

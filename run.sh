@@ -976,10 +976,30 @@ if [ "$EXEC" = true ]; then
         wait "$TRACKER_PID" 2>/dev/null || true
     fi
 
+    # PT-BR: index.html reúne os resultados num relatório navegável. Roda depois do Nextflow
+    #        porque lê o nf_trace.txt completo, e roda também após falha, para dar um índice
+    #        parcial do que chegou a ser produzido. Falha do relatório só avisa: o código de
+    #        saída continua sendo o do Nextflow.
+    # EN-US: index.html gathers the results into a browsable report. It runs after Nextflow
+    #        because it reads the complete nf_trace.txt, and it also runs after a failure, to
+    #        give a partial index of what was produced. A report failure only warns: the exit
+    #        code is still Nextflow's.
+    if [ -d "$OUTDIR" ]; then
+        if in_container python3 bin/generate_report.py \
+                --results "$OUTDIR" \
+                --out "$OUTDIR/index.html" \
+                --accessions "$ACCESSIONS" \
+                ${LOCAL_GENOMES:+--local-genomes "$LOCAL_GENOMES"}; then
+            echo ">>> Relatório / Report: $OUTDIR/index.html"
+        else
+            echo "[AVISO/WARNING] Falha ao gerar o relatório / Failed to build the report: $OUTDIR/index.html"
+        fi
+    fi
+
     if [ $NF_STATUS -ne 0 ]; then
         echo ">>> [EXEC FALHOU / EXEC FAILED] Nextflow retornou / returned $NF_STATUS."
         exit $NF_STATUS
     fi
 
-    echo ">>> [EXEC OK] Pipeline concluído! Artefatos em / Outputs in: $OUTDIR/"
+    echo ">>> [EXEC OK] Pipeline concluído! Artefatos em / Outputs in: $OUTDIR/ (abra / open index.html)"
 fi

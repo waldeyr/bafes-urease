@@ -8,18 +8,20 @@
 ---
 
 ## Resumo do projeto
-O **BAFES-urease-mining** é um pipeline automatizado de bioinformática desenvolvido em Nextflow DSL2 e Python 3.11, containerizado via Docker, projetado para realizar a prospecção genômica, identificação funcional e análise evolutiva de genes envolvidos no catabolismo de ureia em genomas bacterianos. 
 
-O pipeline analisa a lista de genomas que você fornecer — accessions do GenBank/RefSeq e, opcionalmente, assemblies FASTA locais (ver [Genomas de entrada](#genomas-de-entrada)) — e avalia em cada um três frentes metabólicas:
+O **BAFES-urease-mining** é um pipeline automatizado de bioinformática, desenvolvido em Nextflow DSL2 e Python 3.11 e executado em um container Docker. Ele realiza a prospecção genômica, a identificação funcional e a análise evolutiva de genes envolvidos no catabolismo da ureia em genomas bacterianos.
+
+O pipeline analisa os genomas informados — accessions do GenBank/RefSeq e, opcionalmente, montagens genômicas locais em FASTA (assemblies; ver [Genomas de entrada](#genomas-de-entrada)) — e investiga três sistemas relacionados ao metabolismo da ureia:
+
 1. **Via Canônica da Urease**: Subunidades catalíticas ($\gamma$ - UreA, $\beta$ - UreB, $\alpha$ - UreC) e proteínas acessórias de maturação (UreD, UreE, UreF, UreG).
 2. **Sistema de Transporte Ativo de Ureia**: Complexo ABC $urtABCDE$ (UrtA, UrtB, UrtC, UrtD, UrtE).
-3. **Rota Alternativa Independente de Níquel**: Urea carboxilase (`uc`) acoplada à alofanato hidrolase (`ah`).
+3. **Via alternativa independente de níquel**: ureia carboxilase (`uc`) acoplada à alofanato hidrolase (`ah`).
 
-**Conjunto de exemplo.** O repositório vem configurado com o conjunto que motivou o projeto: 10
-genomas de **BAFES** (Bactérias Aeróbicas Formadoras de Endósporos) da coleção CBAFES/UnB,
-isolados de solos do Distrito Federal (accessions `VKHW00000000.1` a `VKIC00000000.1`, em
-[data/accessions.tsv](data/accessions.tsv)). Ao longo deste README, números e nomes de estirpes
-(S1, S2–S10) se referem a esse conjunto e servem só de ilustração.
+**Conjunto de dados de exemplo.** O repositório vem configurado para analisar 10 BAFES
+(Bactérias Aeróbicas Formadoras de Endósporos) da coleção CBAFES/UnB, isoladas de solos do
+Distrito Federal. Seus accessions (`VKHW00000000.1` a `VKIC00000000.1`) estão em
+[data/accessions.tsv](data/accessions.tsv). Ao longo deste README, os números e nomes de estirpes
+(S1, S2–S10) se referem a esse conjunto e são apenas ilustrativos.
 
 ### Genomas de entrada
 
@@ -28,19 +30,20 @@ tabulação:
 
 | Arquivo | Opção | Colunas | Para quê |
 | :--- | :--- | :--- | :--- |
-| `accessions.tsv` | `--accessions` (padrão: `data/accessions.tsv`) | `strain`, `species`, `genbank_accession` | Genomas públicos, baixados do NCBI. Aceita assembly (`GCA_`/`GCF_`) ou WGS master (`VKHW00000000.1`), que é resolvido para o assembly antes do download. |
-| TSV de genomas locais | `--local-genomes` (opcional) | `strain`, `species`, `fasta` | Assemblies que não estão no NCBI. O caminho do FASTA é relativo ao diretório de lançamento; o genoma pula o download e entra direto no QC e no Bakta. Exemplo: [data/local_genomes.tsv](data/local_genomes.tsv). |
+| `accessions.tsv` | `--accessions` (padrão: `data/accessions.tsv`) | `strain`, `species`, `genbank_accession` | Genomas públicos, baixados do NCBI. Aceita o accession de um assembly (`GCA_`/`GCF_`) ou um WGS master (`VKHW00000000.1`), que é resolvido para o assembly antes do download. |
+| TSV de genomas locais | `--local-genomes` (opcional) | `strain`, `species`, `fasta` | Montagens genômicas que não estão no NCBI. O caminho do FASTA é relativo ao diretório em que o comando é executado. O genoma local não é baixado e segue diretamente para o QC e a anotação com Bakta. Exemplo: [data/local_genomes.tsv](data/local_genomes.tsv). |
 
 Regras:
 
-- `strain` é o identificador curto que nomeia todas as saídas (`results/00_genomes/{strain}.fna`,
-  `{strain}_candidates.tsv`, …). Ele não pode se repetir, nem dentro de um arquivo nem entre os
-  dois: um ID repetido aborta a execução antes de qualquer tarefa.
+- `strain` é o identificador curto usado nos nomes dos arquivos de saída (`results/00_genomes/{strain}.fna`,
+  `{strain}_candidates.tsv`, …). Ele deve ser único nos dois arquivos: se houver um ID repetido,
+  o pipeline encerra antes de iniciar qualquer tarefa.
 - `species` é informativo (aparece no relatório); pode ser `Unknown`.
-- Todo genoma, baixado ou local, passa pela mesma validação: contigs, >= 500 kb e alfabeto
-  nucleotídico. Um genoma inválido ou que não baixa interrompe a execução inteira (a estratégia
-  de erro padrão do Nextflow); corrija ou remova a linha e retome com `--resume`.
-- O pre-check exige pelo menos um accession em `accessions.tsv`.
+- Todo genoma, baixado ou local, passa pela mesma validação: presença de contigs, pelo menos
+  500 kb e sequência formada por nucleotídeos válidos. Um genoma inválido ou cujo download falhe
+  interrompe a execução inteira (estratégia padrão de erro do Nextflow); corrija ou remova a linha
+  e retome com `--resume`.
+- A pré-checagem exige pelo menos um accession em `accessions.tsv`.
 
 ```bash
 # Outros genomas públicos
@@ -50,21 +53,21 @@ Regras:
 ./run.sh --exec --accessions minha_lista.tsv --local-genomes meus_fastas.tsv --verbose
 ```
 
-Duas coisas dependem do grupo taxonômico dos genomas de entrada:
+Duas escolhas dependem do grupo taxonômico dos genomas de entrada:
 
 - **Referências do BLASTp.** O conjunto padrão é de Firmicutes, o filo do conjunto de exemplo.
-  Para genomas de outros grupos, troque o recorte com `fetch_references.py --query` (ver
+  Para genomas de outros grupos, ajuste a consulta com `fetch_references.py --query` (ver
   [Conjunto de referências](#conjunto-de-referências)).
-- **Recursos.** O tempo cresce com o número de genomas. Os limites de CPU e memória do
-  [nextflow.config](nextflow.config) foram dimensionados para um host de 96 núcleos: assim, até
-  10 estirpes passam pelo hmmscan numa só leva.
+- **Recursos.** O tempo de execução cresce com o número de genomas. Os limites de CPU e memória
+  em [nextflow.config](nextflow.config) foram definidos para um host de 96 núcleos, permitindo
+  que até 10 estirpes executem o hmmscan em paralelo.
 ---
 
 ## Quick Start
 
 ### Pré-requisitos
 
-Todo o pipeline roda **dentro do container** `bafes-urease`. O host precisa apenas de:
+As etapas de bioinformática são executadas **dentro do container** `bafes-urease`. No host, são necessários apenas:
 
 - Docker Engine >= 24.0 (com o usuário no grupo `docker`)
 - Git, Bash e `curl`
@@ -75,7 +78,7 @@ Nextflow, Bakta, BLAST+, HMMER, MAFFT, trimAl, IQ-TREE, QUAST e clinker vêm tod
 não é preciso instalar nada disso no host. Para rodar sem Docker (com Conda/Mamba já configurado),
 use `--runtime local`.
 
-### Sequência de 3 passos
+### Sequência recomendada em três passos
 
 ```bash
 # Clonar e habilitar o wrapper
@@ -83,38 +86,36 @@ git clone https://github.com/waldeyr/bafes-urease.git
 cd bafes-urease
 chmod +x run.sh
 
-# Passo A: Bootstrap — constrói a imagem, baixa Pfam e o banco completo do Bakta
-#          Leva horas na primeira vez (imagem ~20 min + banco Bakta full ~75 GB).
-#          Vindo de uma instalação com a tag antiga `bafes_urease`? Retagueie antes,
-#          para não reconstruir a imagem do zero:
-#              docker tag bafes_urease bafes-urease && docker rmi bafes_urease
+# Passo A: Bootstrap — constrói a imagem e baixa Pfam e o banco completo do Bakta
 ./run.sh --bootstrap --runtime docker --container-image bafes-urease
 
-# Passo B: Build e Pre-flight Check (validação de recursos e acessibilidade)
+# Passo B: Build e pre-flight check — valida o ambiente e o acesso aos recursos externos
 ./run.sh --build --runtime docker --container-image bafes-urease
 
-# Passo C: Execução do pipeline com log detalhado e acompanhamento por tqdm
+# Passo C: Executa o pipeline com log detalhado e barras de progresso do tqdm.
+#          Quando o pipeline terminar, abra results/index.html para consultar o relatório consolidado.
 ./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
 O `--bootstrap` é idempotente: cada etapa concluída é pulada nas execuções seguintes.
 
-Cada invocação do `run.sh` devolve o prompt imediatamente e segue rodando em uma sessão `screen`
-destacada — veja [Sessão `screen` automática](#7-sessão-screen-automática) para acompanhar o log e
-ler o código de saída real. Outras combinações de parâmetros (banco reduzido, retomada de execução
-interrompida, caminhos alternativos, execução sem container) estão em
+Cada invocação do `run.sh` devolve o prompt imediatamente; o processo continua em uma sessão
+`screen` destacada. Veja [Sessão `screen` automática](#7-sessão-screen-automática) para acompanhar
+o log e consultar o código de saída real. Outras combinações de parâmetros (banco reduzido,
+retomada de execução interrompida, caminhos alternativos e execução sem container) estão em
 [Instalação e uso](#instalação-e-uso).
 
 ---
 
-## Lista de funcionalidades
-- **Pre-flight Checks & Validação Prévias de Acesso**: Validação automatizada de acessibilidade e conectividade HTTP/API aos accessions de entrada no NCBI, banco Pfam (EMBL-EBI FTP) e banco Bakta (Zenodo) antes do disparo de execuções de alto custo computacional.
-- **Aquisição Automática do NCBI**: Download direto dos assemblies FASTA via NCBI Datasets CLI com fallback automático para NCBI Entrez E-utilities; assemblies locais entram com `--local-genomes`, validados pelo mesmo critério.
-- **Controle de Qualidade Genômico (QC)**: Avaliação estatística de contiguidade com QUAST (N50, L50, GC%) e completude/contaminação com CheckM2.
-- **Anotação Genômica Estrutural e Funcional**: Anotação com Bakta v1.9+ gerando saídas estruturadas JSON, GFF3, FAA e GBFF.
-- **Triagem Trifásica de Candidatos**: Consolidação por consenso integrando anotação Bakta (Layer A), BLASTp contra referências do UniProt (Layer B) e busca de domínios Pfam com HMMER3 (Layer C).
-- **Matriz de Presença/Ausência**: Construção automatizada da tabela `urease_presence_absence.tsv` e sumário unificado entre todas as estirpes de entrada.
-- **Análise de Vizinhança Gênica (Sintenia)**: Extração da janela genômica de $\pm 10$ kb em torno de $ureC$ e geração de mapa interativo HTML com `clinker`.
+## Principais funcionalidades
+
+- **Verificação prévia de recursos e conectividade**: Verifica o acesso aos accessions no NCBI e a conectividade com os serviços do Pfam (EMBL-EBI FTP) e do Bakta (Zenodo), antes de iniciar etapas de alto custo computacional.
+- **Download automático de genomas**: Baixa assemblies FASTA pelo NCBI Datasets CLI, com fallback para o NCBI Entrez E-utilities. Genomas locais podem ser informados com `--local-genomes` e passam pela mesma validação.
+- **Controle de qualidade genômica (QC)**: QUAST calcula métricas de contiguidade (N50, L50, GC%); CheckM2 estima a completude e a contaminação.
+- **Anotação genômica estrutural e funcional**: Bakta v1.9+ gera arquivos JSON, GFF3, FAA e GBFF.
+- **Triagem de candidatos em três camadas**: Consolida evidências da anotação Bakta (Camada A), do BLASTp contra referências do UniProt (Camada B) e da busca de domínios Pfam com HMMER3 (Camada C).
+- **Matriz de presença e ausência**: Gera a tabela `urease_presence_absence.tsv` e um resumo com os resultados de todas as estirpes de entrada.
+- **Análise de vizinhança gênica (sintenia)**: Extrai regiões ancoradas em candidatos de alta confiança, genes da via ou perfis Pfam diagnósticos, com até cinco genes flanqueadores de cada lado, e gera um mapa interativo com `clinker`.
 - **Reconstrução Filogenética de UreC**: Alinhamento múltiplo com MAFFT, filtragem de posições conservadas com trimAl e inferência de árvore por Máxima Verossimilhança com IQ-TREE 2.
 - **Acompanhamento de Progresso por tqdm**: Exibição de barras de progresso interativas gerais e por fase (0 a 100%) através do wrapper `run.sh`.
 
@@ -138,15 +139,19 @@ graph TD
         NextflowEngine --> P0["PREFLIGHT_CHECK"]
         P0 --> P1["DOWNLOAD_GENOME"]
         P1 --> P2["QC (QUAST & CheckM2)"]
-        P2 --> P3["BAKTA_ANNOTATE"]
+        P1 --> P3["BAKTA_ANNOTATE"]
         P3 --> P4["EXTRACT_CANDIDATES (BLASTp + HMMER)"]
         P4 --> P5["MERGE_ALL_STRAINS"]
-        P5 --> P6["ANALYZE_SYNTENY (clinker)"]
-        P6 --> P7["BUILD_PHYLOGENY (MAFFT + IQ-TREE 2)"]
+        P4 --> P6["EXTRACT_LOCUS"]
+        P6 --> P7["ANALYZE_SYNTENY (clinker)"]
+        P4 --> P8["BUILD_PHYLOGENY (MAFFT + IQ-TREE 2)"]
     end
 
     NextflowEngine -->|6. Publica Artefatos| ResultsFolder["results/ (Saídas e Relatórios)"]
 ```
+
+Após o download, QC e anotação com Bakta são executados em paralelo. Depois da triagem, a matriz,
+o mapa de sintenia e a filogenia são gerados em ramos independentes.
 
 ### Tecnologias e suas versões
 
@@ -165,29 +170,30 @@ graph TD
 | **HMMER3 (hmmscan)** | >= 3.3.2 | Busca de domínios conservados contra banco Pfam-A |
 | **clinker** | >= 0.0.28 | Visualização interativa de sintenia e vizinhança gênica |
 | **MAFFT** | >= 7.520 | Alinhamento múltiplo de sequências de aminoácidos |
-| **trimAl** | >= 1.4.1 | Remoção de posições mal alinhadas ou gappy |
+| **trimAl** | >= 1.4.1 | Remoção de posições mal alinhadas ou com gaps |
 | **IQ-TREE 2** | >= 2.2.0 | Inferência de árvores filogenéticas por Máxima Verossimilhança |
 | **pandas / tqdm / Biopython** | Últimas estáveis | Manipulação de matrizes, barras de progresso e FASTA |
 
 ---
 
-## Funcionalidades
+## Detalhamento das etapas
 
-### Requisitos
+### Entradas, saídas e regras
 
-| Funcionalidade | Campo de Formulário / Entrada | Campo de Banco / Arquivo de Saída | Regras Aplicadas |
+| Etapa | Entrada | Saída | Regras |
 | :--- | :--- | :--- | :--- |
-| **Pre-flight Resource Check** | `--accessions`, `--references` | Console log / `preflight_status.txt` | Testa HTTP Status 200/JSON no NCBI, EBI Pfam e Bakta Zenodo. Aborta com Exit Code 4 se insumo crítico falhar. |
-| **Download de Genomas** | `genbank_accession` em `data/accessions.tsv`; `fasta` no TSV de `--local-genomes` | `results/00_genomes/{strain}.fna` | Resolve o accession WGS master para o assembly (GCA_/GCF_) e baixa via NCBI Datasets CLI, com fallback para o FTP do assembly. Genomas locais pulam o download. Todos são validados (contigs, número de bases e alfabeto). **Falha se o genoma real não for obtido.** |
-| **QC de Genomas** | FASTA do genoma baixado | `results/01_qc/quast/` e `checkm2/` | QUAST calcula N50, GC% e comprimento total; CheckM2 estima completude/contaminação a partir do banco baixado no bootstrap. |
+| **Verificação prévia de recursos** | `--accessions`, `--references` | Log do console / `preflight_status.txt` | Verifica resposta HTTP 200/JSON no NCBI, no Pfam da EBI e no Bakta do Zenodo. Encerra com código 4 se um recurso crítico estiver inacessível. |
+| **Download de genomas** | `genbank_accession` em `data/accessions.tsv`; `fasta` no TSV de `--local-genomes` | `results/00_genomes/{strain}.fna` | Resolve o accession WGS master para o assembly (GCA_/GCF_) e baixa o genoma via NCBI Datasets CLI, com fallback para o FTP do assembly. Genomas locais seguem para validação sem serem baixados. Todos são validados quanto a contigs, número de bases e alfabeto. **A etapa falha se não obtiver um genoma válido.** |
+| **QC de genomas** | FASTA de cada genoma | `results/01_qc/quast/` e `results/01_qc/checkm2/` | QUAST calcula N50, GC% e comprimento total; CheckM2 estima completude e contaminação usando o banco baixado no bootstrap. |
 | **Anotação com Bakta** | FASTA do genoma + `--bakta_db` | `results/02_bakta/{strain}/` (.json, .gff3, .faa, .gbff) | Atribui identificadores RefSeq/UniRef, termos EC (3.5.1.5, 6.3.4.6, 3.5.1.54) e símbolos gênicos. |
-| **Triagem de Candidatos** | Bakta JSON, `urease_references.fasta`, `Pfam-A.hmm` | `results/03_candidates/{strain}_candidates.tsv` | Classifica a evidência em 3 camadas: Bakta (A), BLASTp (B, E-value <= 1e-5 + identidade >= 30% + cobertura >= 50%) e HMMER (C, score de domínio >= 20). Confiança pela [pontuação](#pontuação-da-triagem-de-candidatos): Alta (>= 2 pontos), Média (1), Baixa (só BLASTp contra TrEMBL). |
+| **Triagem de candidatos** | JSON do Bakta, `urease_references.fasta`, `Pfam-A.hmm` | `results/03_candidates/{strain}/{strain}_candidates.tsv` | Classifica a evidência em três camadas: Bakta (A), BLASTp (B, E-value <= 1e-5, identidade >= 30% e cobertura >= 50%) e HMMER (C, score de domínio >= 20). A confiança segue a [pontuação](#pontuação-da-triagem-de-candidatos): Alta (>= 2 pontos), Média (1) ou Baixa (somente BLASTp contra TrEMBL). |
 | **Consolidação de Matriz** | Candidatos TSV de todas as estirpes | `results/04_summary/urease_presence_absence.tsv` | Cria matriz binária (0/1) para os 11 genes alvo ($ureA$–$ureH$, $urtA$, $uc$, $ah$) por estirpe. |
-| **Análise de Sintenia** | Arquivos GBFF das estirpes | `results/05_synteny/synteny.html` | Executa clinker sobre os GenBank anotados (exige >= 2 genomas). Falha explicitamente se não houver GenBank ou se o clinker falhar — nenhum HTML de placeholder é escrito. |
+| **Análise de sintenia** | Arquivos GBFF dos loci extraídos | `results/05_synteny/synteny.html` | Extrai regiões ancoradas em candidatos de alta confiança, genes da via ou perfis Pfam diagnósticos, com até cinco genes flanqueadores de cada lado, e executa `clinker`. São necessários pelo menos dois genomas com um locus extraído. Se houver menos de dois arquivos GenBank ou se `clinker` falhar, a etapa falha explicitamente; nenhum HTML de placeholder é escrito. |
 | **Filogenia de UreC** | UreC selecionado a partir dos TSVs de candidatos | `results/06_phylogeny/ureC.treefile`, `ureC_labels.tsv`, `phylogeny_status.txt` | Usa **apenas** as sequências de UreC identificadas na triagem, não o proteoma inteiro, mais as UreC de referência e o grupo externo (`data/urec_outgroup.fasta`). Exige >= 3 UreC; abaixo disso registra o motivo em `phylogeny_status.txt` e não gera árvore. MAFFT -> trimAl `automated1` -> IQ-TREE 2 (`-m MFP`, 1000 ultrafast bootstraps, enraizada no grupo externo com `-o`). |
-| **Acompanhamento tqdm** | Execução via `run.sh --exec` | Terminal UI com barras interativas | Renderiza o percentual de conclusão por fase e progresso global. |
+| **Acompanhamento com tqdm** | Execução via `run.sh --exec` | Barras de progresso no terminal | Exibe o percentual de conclusão de cada fase e do pipeline. |
 
 ### Pontuação da triagem de candidatos
+
 
 Cada camada vale 1 ponto, com uma exceção: o BLASTp cujo **melhor acerto** é uma referência do
 TrEMBL (não revisada) é registrado, mas não pontua. A anotação do TrEMBL é automática, como a do
@@ -196,10 +202,10 @@ coluna `blast_ref_status`, e os pontos em `evidence_points`.
 
 | Evidência | Pontos |
 | :--- | :--- |
-| Camada A — Bakta: gene alvo, número EC ou produto | 1 |
+| Camada A — Bakta: gene alvo, número EC ou produto \* | 1 |
 | Camada B — BLASTp com melhor acerto em referência revisada (Swiss-Prot) | 1 |
 | Camada B — BLASTp com melhor acerto em referência não revisada (TrEMBL) | 0 (registrado) |
-| Camada C — HMMER: perfil Pfam da lista, score de domínio >= 20 | 1 |
+| Camada C — HMMER: perfil Pfam da lista, score de domínio >= 20 \* | 1 |
 
 | Pontos | Confiança |
 | :--- | :--- |
@@ -217,11 +223,38 @@ coluna `blast_ref_status`, e os pontos em `evidence_points`.
 | Só Bakta, ou só HMMER | 1 | Média |
 | Só BLASTp (TrEMBL) | 0 | Baixa |
 
-Hoje só UrtA–E, `uca` e `atzF` vêm do TrEMBL. UrtA–E e `atzF` não têm perfil na lista da Camada
-C, então na prática chegam no máximo a Média. A urea carboxilase (`uca`) carrega o domínio CT_C_D
-(PF02682), que está na lista, e por isso ainda alcança Alta com Bakta + HMMER. Um FASTA de referências próprio (`--references`)
-cujo cabeçalho não siga o formato `ref|gene|UniProt:acesso|organismo|status|Naa` recebe status
-`unknown` e pontua como revisado.
+\* **Regras para a família KipI/PxpABC (5-oxoprolinase).**
+
+- Genes `pxpA/B/C` e `kipI/A` são excluídos da Camada A, mesmo quando o produto contém
+  "allophanate" ou há anotação EC 3.5.1.54 (`kipI_family`).
+- O domínio CT_C_D (PF02682) só conta na Camada C quando a mesma proteína também tem um domínio de
+  biotina carboxilase (PF00289, PF02786 ou PF02785), arquitetura da ureia carboxilase. CT_C_D
+  isolado não conta (`ct_c_d_without_bc`). Uma ureia carboxilase distribuída entre subunidades
+  separadas também não conta.
+- A matriz (`merge_strain_results.py`) e o destaque dos mapas de sintenia (`generate_report.py`)
+  não classificam produtos de genes KipI como `uc` ou `ah`.
+
+As evidências retiradas por essas regras são registradas em `_filtered.tsv`, com o motivo. Na
+consulta padrão, UrtA–E, `uca` e `atzF` são recuperados por nome exato do gene. UrtA–E e `atzF` não
+têm perfil próprio na lista da Camada C; para `uca`, CT_C_D pode contribuir quando está na mesma
+proteína que a biotina carboxilase. Um FASTA de referências próprio (`--references`) cujo cabeçalho
+não siga o formato `ref|gene|UniProt:acesso|organismo|status|Naa` recebe status `unknown` e pontua
+como revisado.
+
+#### Filtros antes da pontuação
+
+UrtD e UrtE são ATPases de um transportador ABC, uma família ampla. Para restringir os acertos
+TrEMBL a correspondências mais próximas e confirmar o contexto do transportador, dois filtros são
+aplicados antes da pontuação:
+
+| Filtro | Regra | Parâmetro (padrão) |
+| :--- | :--- | :--- |
+| Identidade TrEMBL | Um acerto de BLASTp contra referência não revisada só conta com identidade >= 80 %, além dos limiares gerais (E <= 1e-5, identidade >= 30 %, cobertura >= 50 %) | `--trembl_min_identity` (80) |
+| Contexto de operon | UrtB–E (pelo gene do Bakta ou pela referência do melhor acerto) só contam se houver uma UrtA no mesmo contig, a até 5 CDS de distância. Sem ela, a evidência `urt` é retirada; a linha também é removida se não restar outra camada | `--urt_operon_window` (5) |
+
+Toda evidência filtrada é registrada em
+`results/03_candidates/{strain}/{strain}_filtered.tsv`, junto com a referência, a identidade e o
+motivo. O relatório também apresenta a contagem por motivo.
 
 ---
 
@@ -258,16 +291,15 @@ substituir a saída por um valor plausível. Em particular:
 | :--- | :--- |
 | Consulta | `(taxonomy_id:1239) AND (((protein_name:urease) AND (reviewed:true)) OR (gene_exact:urtA OR … OR gene_exact:urtE OR gene_exact:uca OR gene_exact:atzF))` |
 | Endpoint | `https://rest.uniprot.org/uniprotkb/stream` (FASTA comprimido) |
-| Escopo | Firmicutes. Urease (UreA–I): só revisadas (Swiss-Prot). Transporte (UrtA–E), urea carboxilase (`uca`) e alofanato hidrolase (`atzF`): revisadas ou não (TrEMBL) |
-| Redundância | Uma sequência por gene e espécie; a revisada tem preferência, depois a menor acessão (`--keep-redundant` desliga) |
-| Piso de sanidade | 100 sequências na resposta bruta; abaixo disso ela é tratada como truncada e aborta |
-| Grupo externo | UreC revisadas de *Klebsiella aerogenes* (P18314) e *Proteus mirabilis* (P17086), em `data/urec_outgroup.fasta` — só para a árvore, fora do BLASTp |
+| Escopo | Firmicutes. Urease (UreA–I): apenas entradas revisadas (Swiss-Prot). Transporte (UrtA–E), ureia carboxilase (`uca`) e alofanato hidrolase (`atzF`): entradas revisadas ou não revisadas (TrEMBL) |
+| Redundância | Uma sequência para cada gene em cada espécie; entradas revisadas têm preferência, depois é escolhida a menor acessão (`--keep-redundant` desliga essa regra) |
+| Tamanho mínimo da resposta | 100 sequências; respostas menores são consideradas truncadas e interrompem a execução |
+| Grupo externo | Sequências UreC revisadas de *Klebsiella aerogenes* (P18314) e *Proteus mirabilis* (P17086), em `data/urec_outgroup.fasta` — usadas apenas na árvore, fora do BLASTp |
 | Procedência | `data/urease_references.provenance.txt` e `data/urec_outgroup.provenance.txt` — release, data, contagens e `sha256` |
 
-O conjunto é **vivo**: acompanha o UniProt e muda a cada release (na release 2026_03 são 960
-sequências após a deduplicação — 109 revisadas e 851 não revisadas — de 1.074 na resposta). A
-reprodutibilidade não vem de uma lista fixa de accessions, e sim do registro de procedência
-gravado ao lado do FASTA. Para fixar um recorte diferente, use `--query` ou `--url`:
+O conjunto é obtido por uma consulta dinâmica ao UniProt e pode variar entre releases. O arquivo de
+procedência registra a release, a data, as contagens e o `sha256` do conjunto baixado. Para
+selecionar outro recorte taxonômico, use `--query` ou `--url`:
 
 ```bash
 python3 bin/fetch_references.py --query '(urease AND (taxonomy_id:1386)) AND (reviewed:true)'
@@ -294,22 +326,19 @@ cd bafes-urease
 chmod +x run.sh
 ```
 
-### 3. Sequência Quick Start
+### 3. Sequência recomendada
 
-A sequência recomendada, repetida aqui na íntegra:
+A sequência recomendada, também apresentada no [Quick Start](#quick-start):
 
 ```bash
-# Passo A: Bootstrap — constrói a imagem, baixa Pfam e o banco completo do Bakta
-#          Leva horas na primeira vez (imagem ~20 min + banco Bakta full ~75 GB).
-#          Vindo de uma instalação com a tag antiga `bafes_urease`? Retagueie antes,
-#          para não reconstruir a imagem do zero:
-#              docker tag bafes_urease bafes-urease && docker rmi bafes_urease
+# Passo A: Bootstrap — constrói a imagem e baixa Pfam e o banco completo do Bakta
 ./run.sh --bootstrap --runtime docker --container-image bafes-urease
 
-# Passo B: Build e Pre-flight Check (validação de recursos e acessibilidade)
+# Passo B: Build e pre-flight check — valida o ambiente e o acesso aos recursos externos
 ./run.sh --build --runtime docker --container-image bafes-urease
 
-# Passo C: Execução do pipeline com log detalhado e acompanhamento por tqdm
+# Passo C: Executa o pipeline com log detalhado e barras de progresso do tqdm.
+#          Quando o pipeline terminar, abra results/index.html para consultar o relatório consolidado.
 ./run.sh --exec --runtime docker --container-image bafes-urease --verbose
 ```
 
@@ -350,8 +379,8 @@ divergência de versão e mantém a cópia local:
 ./run.sh --bootstrap --update-db
 ```
 
-**Encadear build e execução propagando o código de saída** — `--wait` bloqueia até o fim de cada
-fase, de modo que o `&&` só dispara se a anterior tiver saído com 0:
+**Encadear build e execução preservando o código de saída** — `--wait` bloqueia até o fim de cada
+fase; o segundo comando só é executado se o primeiro terminar com código 0:
 
 ```bash
 ./run.sh --build --wait && ./run.sh --exec --wait --verbose
@@ -403,8 +432,8 @@ diretório do projeto (por exemplo, em um volume compartilhado):
 ./run.sh --exec --runtime singularity --container-image bafes-urease --verbose
 ```
 
-**Rodada completa não supervisionada** — banco reduzido, tudo em primeiro plano e encadeado,
-adequada para disparar dentro de um job de fila:
+**Execução completa sem interação** — usa o banco reduzido, executa cada etapa em primeiro plano
+e encadeia os comandos. É adequada para iniciar como um job de fila:
 
 ```bash
 ./run.sh --bootstrap --bakta-db-type light --no-screen \
@@ -424,7 +453,7 @@ adequada para disparar dentro de um job de fila:
 | `--force-rebuild` | Reconstrói a imagem Docker mesmo que ela já exista |
 | `--bakta-db-type full\|light` | Banco completo (~75 GB, padrão) ou reduzido (~10 GB) |
 | `--skip-bakta-db` | Não baixa o banco do Bakta (use se já tiver um em `--bakta-db`) |
-| `--update-db` | Rebaixa os bancos cuja versão divergiu da disponível (sem ele, só avisa) |
+| `--update-db` | Baixa novamente os bancos cuja versão diverge da disponível (sem essa opção, apenas avisa) |
 | `--runtime docker\|singularity\|local` | Motor de execução (padrão: `docker`) |
 | `--container-image IMAGE` | Tag da imagem do container (padrão: `bafes-urease`) |
 | `--no-screen` | Executa em primeiro plano, sem criar sessão |
@@ -439,7 +468,7 @@ adequada para disparar dentro de um job de fila:
 
 ### 6. Verificação de versão dos bancos
 
-Os bancos não são só verificados por existência — a versão instalada também é conferida. Isso
+Além de verificar se os bancos existem, o `run.sh` também confere as versões instaladas. Isso
 importa porque as URLs de origem são **rolantes**: `Pfam/current_release` serve releases
 diferentes ao longo do tempo, então "o arquivo existe" não diz *qual* release está no disco.
 
@@ -453,18 +482,18 @@ O `run.sh` registra a versão baixada em `db/.versions/` e a compara com a dispo
 | AMRFinderPlus | alvo do symlink `amrfinderplus-db/latest` | consultada pelo `amrfinder_update` |
 | Referências UniProt | `uniprot_release` em `data/urease_references.provenance.txt` | cabeçalho `x-uniprot-release` da API REST |
 
-**Nada é rebaixado enquanto o banco existir**, nem quando a versão diverge: o `--bootstrap`
-apenas avisa e mantém a cópia local. Rebaixar o Bakta full são ~75 GB e horas de rede, então a
-atualização é sempre explícita, via `--update-db`. Sem rede para consultar a versão remota, a
-cópia local é mantida sem erro.
+Por padrão, `--bootstrap` não substitui um banco existente, mesmo que a versão instalada seja
+diferente da disponível: ele informa a divergência e mantém a cópia local. Baixar novamente o
+banco completo do Bakta exige cerca de 75 GB de transferência; por isso, a atualização requer a
+opção explícita `--update-db`. Se não houver rede para consultar a versão
+remota, a cópia local é mantida sem erro.
 
-As referências do UniProt vêm de uma consulta **viva** (`fetch_references.py`), cujo conjunto muda
-a cada release. Por isso o que identifica o FASTA local é a release gravada em
-`data/urease_references.provenance.txt` — junto da contagem e do `sha256`. Um FASTA gerado antes
-desse registro fica sem release conhecida: o `--bootstrap` avisa e mantém o arquivo.
+As referências do UniProt vêm de uma consulta dinâmica (`fetch_references.py`), cujo resultado
+pode mudar a cada release. A procedência do FASTA registra a release, a data, a contagem e o
+`sha256` em `data/urease_references.provenance.txt`.
 
-Ao atualizar (Bakta e CheckM2), o banco atual é movido para `.old` e só descartado depois que o
-novo chega inteiro; se o download falhar, o banco que já funcionava é restaurado em vez de perdido.
+Ao atualizar o Bakta ou o CheckM2, o banco atual é movido para `.old` e descartado somente depois
+que o novo banco é baixado com sucesso. Se o download falhar, a cópia em uso é restaurada.
 
 ```bash
 # Confere versões e atualiza só o que divergiu
@@ -474,14 +503,13 @@ novo chega inteiro; se o download falhar, o banco que já funcionava é restaura
 ### 7. Sessão `screen` automática
 
 Toda invocação do `run.sh` cria a sua própria sessão `screen` **destacada** e devolve o prompt
-imediatamente, de modo que uma queda de SSH não interrompa a execução — relevante porque o
-bootstrap leva horas e o `--exec` mais ainda.
+imediatamente, permitindo acompanhar etapas longas sem manter a conexão SSH aberta.
 
 ```
 >>> Sessão / Session : bafes-bootstrap (screen)
 >>> Reanexar / Attach: screen -r bafes-bootstrap        (solte com Ctrl-A D)
->>> Log              : .logs/bootstrap-20260727-1430.log
->>> Código de saída  : .logs/bootstrap-20260727-1430.exitcode
+>>> Log              : .logs/bootstrap-YYYYMMDD-HHMM.log
+>>> Código de saída  : .logs/bootstrap-YYYYMMDD-HHMM.exitcode
 ```
 
 **Atenção ao código de saída.** Como a execução segue em segundo plano, a invocação externa
@@ -538,14 +566,23 @@ nextflow run main.nf \
 Os relatórios (`nf_report.html`, `nf_trace.txt`, `nf_timeline.html`, `nf_dag.html`) já vêm
 habilitados no `nextflow.config` — não é preciso passar as flags `-with-*`.
 
+O `run.sh` gera automaticamente o `results/index.html` ao fim do `--exec`. Se executar o Nextflow
+diretamente, gere o relatório depois que ele terminar (o script lê o `nf_trace.txt` completo e
+precisa apenas do Python 3):
+
+```bash
+python3 bin/generate_report.py --results results --accessions data/accessions.tsv
+```
+
 ### 11. Estrutura de Saídas Geradas
 ```
 results/
+├── index.html       # Relatório navegável: resumo, gráficos e links para todos os artefatos
 ├── 00_preflight/    # Status dos testes de validação prévia
 ├── 00_genomes/      # Assemblies FASTA baixados do NCBI
 ├── 01_qc/           # Relatórios de QC (QUAST + CheckM2)
 ├── 02_bakta/        # Anotações em GFF3, FAA, JSON, GBFF por estirpe
-├── 03_candidates/   # Candidatos consolidados por estirpe (Bakta + BLASTp + HMMER)
+├── 03_candidates/   # Candidatos por estirpe (Bakta + BLASTp + HMMER) e evidência descartada (_filtered.tsv)
 ├── 04_summary/      # Matriz urease_presence_absence.tsv e resumo unificado
 ├── 05_synteny/      # Visualizador interativo de sintenia (synteny.html)
 └── 06_phylogeny/    # Árvore filogenética de UreC (ureC.treefile e alinhamentos)
@@ -553,10 +590,11 @@ results/
 
 ---
 
-## Banco de dados e dicionário de dados
+## Organização dos dados e dicionário de dados
 
-### Diagrama de banco de dados
-O pipeline utiliza arquivos tabulares delimitados por tabulação (`.tsv`), documentos estruturados JSON, alinhamentos FASTA e visualizadores HTML persistidos no sistema de arquivos estruturado em diretórios:
+### Diagrama dos dados
+
+O pipeline armazena arquivos tabulares delimitados por tabulação (`.tsv`), documentos JSON, alinhamentos FASTA e visualizações HTML em diretórios de saída:
 
 ```mermaid
 erDiagram
@@ -620,7 +658,7 @@ erDiagram
 | :--- | :--- | :--- |
 | `strain` | String (PK) | Identificador único curto; não pode repetir um de `accessions.tsv` |
 | `species` | String | Binômio da espécie, ou `Unknown` |
-| `fasta` | String | Caminho do assembly FASTA, relativo ao diretório de lançamento |
+| `fasta` | String | Caminho do assembly FASTA, relativo ao diretório em que o comando é executado |
 
 #### Tabela: `results/03_candidates/{strain}/{strain}_candidates.tsv`
 | Campo | Tipo | Descrição |
@@ -636,6 +674,16 @@ erDiagram
 | `evidence_points` | Integer | Pontos de evidência (ver [Pontuação da triagem de candidatos](#pontuação-da-triagem-de-candidatos)) |
 | `confidence` | String | Confiança derivada dos pontos: `Alta/High`, `Media/Medium` ou `Baixa/Low` |
 
+#### Tabela: `results/03_candidates/{strain}/{strain}_filtered.tsv`
+| Campo | Tipo | Descrição |
+| :--- | :--- | :--- |
+| `strain` | String (FK) | Identificador da estirpe |
+| `feature_id` | String | Locus tag da proteína cuja evidência foi retirada |
+| `layer` | String | Camada retirada: `blast`, `bakta` ou `hmmer` |
+| `reference` | String | Referência do acerto de BLASTp, gene e produto do Bakta ou perfil Pfam do HMMER |
+| `identity` | Float | Identidade do acerto de BLASTp (%); vazio para `bakta` e `hmmer` |
+| `reason` | String | `trembl_identity` (abaixo da identidade mínima TrEMBL), `urt_without_urtA` (UrtB–E sem UrtA vizinha), `kipI_family` (gene pxpA/B/C ou kipI/A, 5-oxoprolinase) ou `ct_c_d_without_bc` (CT_C_D sem biotina carboxilase na mesma proteína, isto é, PxpB/KipI) |
+
 #### Tabela: `results/04_summary/urease_presence_absence.tsv`
 | Campo | Tipo | Descrição |
 | :--- | :--- | :--- |
@@ -649,8 +697,8 @@ erDiagram
 | `ureG` | Integer (0/1) | Presença (1) ou ausência (0) da GTPase acessória UreG |
 | `ureH` | Integer (0/1) | Presença (1) ou ausência (0) da proteína acessória UreH |
 | `urtA` | Integer (0/1) | Presença (1) ou ausência (0) do transportador de ureia UrtA |
-| `uc` | Integer (0/1) | Presença (1) ou ausência (0) da urea carboxilase |
-| `ah` | Integer (0/1) | Presença (1) ou ausência (0) da alofanato hidrolase |
+| `uc` | Integer (0/1) | Presença (1) ou ausência (0) da ureia carboxilase |
+| `ah` | Integer (0/1) | Presença (1) ou ausência (0) da alofanato hidrolase. PxpB/PxpC com produto "Allophanate hydrolase" não contam (ver \* na tabela de pontuação) |
 
 ---
 
@@ -664,15 +712,16 @@ presença. Um candidato só é de confiança **Alta** quando pelo menos duas cam
 
 | Banco | Etapa | Por quê |
 | :--- | :--- | :--- |
-| **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Fonte pública dos genomas listados em `accessions.tsv`. Accessions WGS master (como os do conjunto de exemplo, `VKHW00000000.1`) não têm sequência; o [download_genome.py](bin/download_genome.py) os resolve para o assembly `GCA_`/`GCF_` antes de baixar. Genomas locais (`--local-genomes`) não passam por aqui. |
+| **NCBI GenBank / Assembly** | `DOWNLOAD_GENOME` | Fonte pública dos genomas listados em `accessions.tsv`. Accessions WGS master (como os do conjunto de exemplo, `VKHW00000000.1`) não têm sequência; o [download_genome.py](bin/download_genome.py) os resolve para o assembly `GCA_`/`GCF_` antes do download. Genomas locais (`--local-genomes`) não passam por essa etapa. |
 | **CheckM2** (`uniref100.KO.1.dmnd`) | `QC_CHECKM2` | Estima completude e contaminação com um modelo de aprendizado de máquina, sem depender de marcadores específicos de linhagem — adequado a estirpes sem espécie definida, como as *Bacillus* sp. do conjunto de exemplo. |
 | **Bakta DB full** | `BAKTA_ANNOTATE` | Anotação bacteriana padronizada. O JSON traz gene, produto, termos EC e `db_xrefs`, que formam a Camada A. A versão *full* (~75 GB) atribui mais identificadores RefSeq/UniRef que a *light*. Inclui o AMRFinderPlus, dependência interna do Bakta — por isso ele aparece na verificação de versões. |
-| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Camada B (BLASTp) | Restrito por padrão a **Firmicutes** (`taxonomy_id:1239`), o filo do conjunto de exemplo, o que mantém a identidade alta frente aos limiares de 30 % de identidade e 50 % de cobertura. Para a urease, só entradas **revisadas** (Swiss-Prot), com função verificada por curadoria. Para UrtA–E, `uca` e `atzF` o Swiss-Prot não tem nenhuma entrada de Firmicutes (e nenhuma UrtA–E em organismo algum), então entram as do TrEMBL, buscadas por nome exato de gene. A consulta é viva, com release e `sha256` registrados em [urease_references.provenance.txt](data/urease_references.provenance.txt). |
-| **UniProtKB/Swiss-Prot** (grupo externo) | `BUILD_PHYLOGENY` | Duas UreC de Gammaproteobacteria que enraízam a árvore de UreC (ver a pergunta sobre espécies). Ficam em [urec_outgroup.fasta](data/urec_outgroup.fasta), separadas das referências do BLASTp. |
-| **Pfam-A** | `EXTRACT_CANDIDATES`, Camada C (hmmscan) | Perfis HMM detectam homologia remota que o BLASTp perde e não dependem da anotação do Bakta. Só 10 perfis contam como evidência (`UREASE_PFAM_ACCESSIONS` em [extract_urease_candidates.py](bin/extract_urease_candidates.py)). PF01979 (Amidohydro_1) e PF00005 (ABC_tran) ficam de fora por cobrirem superfamílias inteiras. |
+| **UniProtKB** (Swiss-Prot + TrEMBL) | `EXTRACT_CANDIDATES`, Camada B (BLASTp) | A consulta padrão usa Firmicutes (`taxonomy_id:1239`): busca ureases revisadas e busca UrtA–E, `uca` e `atzF` pelo nome exato do gene. Os resultados podem incluir entradas revisadas e não revisadas; a pontuação do BLASTp considera o status de cada referência. A consulta é dinâmica, e a release e o `sha256` do conjunto baixado são registrados em [urease_references.provenance.txt](data/urease_references.provenance.txt). |
+| **UniProtKB/Swiss-Prot** (grupo externo) | `BUILD_PHYLOGENY` | Duas sequências UreC de Gammaproteobacteria usadas para enraizar a árvore (ver a linha sobre filogenia de UreC na tabela abaixo). Ficam em [urec_outgroup.fasta](data/urec_outgroup.fasta), separadas das referências do BLASTp. |
+| **Pfam-A** | `EXTRACT_CANDIDATES`, Camada C (hmmscan) | Perfis HMM detectam homologia remota que o BLASTp pode não detectar e não dependem da anotação do Bakta. Apenas 10 perfis contam como evidência (`UREASE_PFAM_ACCESSIONS` em [extract_urease_candidates.py](bin/extract_urease_candidates.py)). O CT_C_D (PF02682) só conta quando está na mesma proteína que um domínio de biotina carboxilase; isolado, ele ocorre na PxpB/KipI da 5-oxoprolinase. PF01979 (Amidohydro_1) e PF00005 (ABC_tran) não contam por abrangerem superfamílias inteiras. |
 
-**Limitação conhecida.** Pfam e Bakta vêm de URLs rolantes: "o arquivo existe" não diz qual
-release está no disco. A reprodutibilidade depende das versões gravadas em `db/.versions/` (ver
+**Limitação conhecida.** Pfam e Bakta usam URLs dinâmicas que apontam para versões diferentes ao
+longo do tempo. A existência do arquivo não informa qual release foi baixada. A reprodutibilidade
+depende das versões gravadas em `db/.versions/` (ver
 [Verificação de versão dos bancos](#6-verificação-de-versão-dos-bancos)).
 
 ### Qual a ordem de execução e por quê?
@@ -680,8 +729,8 @@ release está no disco. A reprodutibilidade depende das versões gravadas em `db
 O Nextflow executa por fluxo de dados: a "ordem" é a cadeia de dependências, e cada estirpe
 avança de forma independente. O diagrama linear da [Arquitetura](#arquitetura) simplifica isso.
 
-1. **`PREFLIGHT_CHECK`** — Testa NCBI, Pfam, Bakta e as referências antes de tudo, para falhar em
-   segundos em vez de depois de horas de anotação e hmmscan.
+1. **`PREFLIGHT_CHECK`** — Verifica o acesso ao NCBI, ao Pfam, ao Bakta e às referências antes de
+   iniciar o processamento, para detectar falhas de acesso antes das etapas de anotação e hmmscan.
 2. **`DOWNLOAD_GENOME` / `STAGE_LOCAL_GENOME`** — Obtém e valida o FASTA (contigs, >= 500 kb,
    alfabeto). Sem genoma real, a estirpe para aqui.
 3. **`QC_QUAST` e `QC_CHECKM2`**, em paralelo com **`BAKTA_ANNOTATE`** — O QC é informativo e
@@ -694,10 +743,9 @@ avança de forma independente. O diagrama linear da [Arquitetura](#arquitetura) 
 6. **`MERGE_ALL_STRAINS`**, **`EXTRACT_LOCUS`** e **`BUILD_PHYLOGENY`** depois da triagem — As
    três consomem os candidatos: a matriz os consolida, o recorte do locus ancora neles e a filogenia
    seleciona o UreC deles, nunca do proteoma inteiro. São independentes entre si.
-7. **`EXTRACT_LOCUS`** antes de **`ANALYZE_SYNTENY`** — O clinker alinha todas as proteínas contra
-   todas. No conjunto de exemplo, com os 10 genomas inteiros (~46.500 CDS), eram ~10⁹
-   alinhamentos e a etapa estourou as 8 h (exit 143). Recortado o locus (±5 genes flanqueadores),
-   a etapa leva segundos — e o custo passa a crescer com o tamanho do locus, não do genoma.
+7. **`EXTRACT_LOCUS`** antes de **`ANALYZE_SYNTENY`** — A extração fornece ao `clinker` regiões
+   ancoradas nos genes da via, com até cinco genes flanqueadores de cada lado. Isso limita a
+   comparação às vizinhanças gênicas relevantes para a análise de sintenia.
 
 ### Quais espécies de referência em cada etapa e por quê?
 
@@ -706,23 +754,23 @@ avança de forma independente. O diagrama linear da [Arquitetura](#arquitetura) 
 | **Genomas de entrada** | Os listados em `accessions.tsv` e no TSV de `--local-genomes`. No conjunto de exemplo: S1 *Lysinibacillus fusiformis* e S2–S10 *Bacillus* sp. (coleção CBAFES/UnB), mais os genomas locais SDF0008, SDF0018 e SDF0030 de [local_genomes.tsv](data/local_genomes.tsv). | São o objeto da análise, não referências. |
 | **QC** | Nenhuma. | O QUAST roda sem `-r`: o pipeline não presume a espécie dos genomas de entrada, então não há genoma de referência fixo. O CheckM2 usa um modelo universal. |
 | **Anotação (Bakta)** | Nenhuma espécie fixada (sem `--genus`/`--species`). | Os bancos do Bakta são universais; fixar espécie só mudaria o nome na saída. |
-| **Camada B (BLASTp), urease** | 109 proteínas Swiss-Prot de 21 espécies de Firmicutes, uma por gene e espécie (release 2026_03): UreA 18, UreB 19, UreC 19, UreD 12, UreE 16, UreF 11, UreG 12, UreH 1, UreI 1. Entre elas *Sporosarcina pasteurii*, *Lysinibacillus sphaericus*, *Bacillus subtilis*, *B. cereus*, *B. velezensis*, *Geobacillus kaustophilus*, *Halalkalibacterium halodurans*, além de *Staphylococcus*, *Streptococcus* e clostrídios. | Mesmo filo do conjunto de exemplo, com função verificada. *S. pasteurii* é a urease-modelo de Firmicutes; no exemplo, *L. sphaericus* é do mesmo gênero de S1, e *Bacillus* e *Geobacillus* são parentes próximos de S2–S10. Para genomas de outro filo, troque o recorte com `--query`. A deduplicação levou *S. aureus* de 94 para 7 entradas (uma por gene). |
-| **Camada B (BLASTp), transporte e via alternativa** | 851 proteínas TrEMBL de Firmicutes, uma por gene e espécie: UrtA 130, UrtB 139, UrtC 136, UrtD 137, UrtE 137 (141 espécies), `uca` 84 e `atzF` 88. Gêneros mais representados: *Paenibacillus*, *Cohnella*, *Bacillus*, *Metabacillus*, *Geobacillus*. | São os únicos Firmicutes com esses genes no UniProt. `uca` e `atzF` são buscados pelo nome do gene, e não pelo EC, porque o EC 3.5.1.54 também traz as "alofanato hidrolases" KipI/KipA, que em *Bacillus* são a 5-oxoprolinase PxpB/PxpC. |
+| **Camada B (BLASTp), urease** | Entradas revisadas (Swiss-Prot) de Firmicutes selecionadas pela consulta padrão, com uma sequência por gene e espécie. | A curadoria fornece referências de urease anotadas manualmente. A consulta e os metadados do conjunto baixado ficam registrados nos arquivos de procedência; para outro grupo taxonômico, ajuste `--query`. |
+| **Camada B (BLASTp), transporte e via alternativa** | Entradas do UniProt para UrtA–E, `uca` e `atzF`, selecionadas por nome exato do gene dentro do escopo taxonômico da consulta padrão. | A busca por nome de gene restringe as referências da via alternativa. Os acertos não revisados são identificados como TrEMBL e não pontuam; o EC 3.5.1.54 pode incluir proteínas KipI/KipA da 5-oxoprolinase. |
 | **Camada C (Pfam)** | Nenhuma espécie. | Perfis de família construídos a partir de alinhamentos de muitos táxons. |
-| **Sintenia** | Só as estirpes de entrada. | O objetivo é comparar a organização do operon entre os isolados. Estirpe sem urease fica fora do mapa, e nenhum locus é inventado para ela. |
-| **Filogenia de UreC** | UreC das estirpes + 19 UreC de referência, uma por espécie de Firmicutes (incluindo *S. pasteurii*, *B. subtilis*, *B. cereus*, *B. velezensis*, *G. kaustophilus* e *H. halodurans*) + grupo externo: UreC de *Klebsiella aerogenes* (P18314) e *Proteus mirabilis* (P17086). | O IQ-TREE exige >= 4 sequências para bootstrap, e as referências situam as estirpes no filo. O grupo externo são ureases-modelo de Gammaproteobacteria, com estrutura resolvida e claramente fora de Firmicutes; o IQ-TREE enraíza a árvore nelas (`-o`). Desligáveis com `--phylo_include_refs false` e `--phylo_outgroup false`. |
+| **Sintenia** | Só as estirpes de entrada. | O objetivo é comparar a organização dos loci da via entre os isolados. Estirpes sem genes âncora da via ficam fora do mapa; nenhum locus é inventado para incluí-las. |
+| **Filogenia de UreC** | UreC dos candidatos, referências incluídas em `urease_references.fasta` e sequências de `urec_outgroup.fasta`. | As referências oferecem contexto taxonômico; o grupo externo de Gammaproteobacteria enraíza a árvore. O IQ-TREE exige pelo menos 4 sequências para o bootstrap. Referências e grupo externo podem ser desativados com `--phylo_include_refs false` e `--phylo_outgroup false`, respectivamente. |
 
 **Limitações conhecidas.**
 
-- **Referências não revisadas para transporte e via alternativa.** UrtA–E, `uca` e `atzF` vêm do
-  TrEMBL, anotado automaticamente como o Bakta. Para esses genes um acerto de BLASTp confirma
-  similaridade com proteínas anotadas da mesma forma, não função verificada. Por isso esse acerto
-  fica marcado (`blast_ref_status = unreviewed`, selo "L" vazado no relatório) e não pontua — ver
+- **Acertos em referências não revisadas.** O TrEMBL contém anotações automáticas. Um acerto de
+  BLASTp contra uma dessas referências indica similaridade, mas não confirma a função. O acerto
+  recebe `blast_ref_status = unreviewed`, é sinalizado no relatório e não pontua — ver
   [Pontuação da triagem de candidatos](#pontuação-da-triagem-de-candidatos).
-- **Viés de composição do transporte.** *Paenibacillus* responde por quase metade das
-  referências UrtA–E, porque é o gênero de Firmicutes com mais genomas que trazem o operon.
-- **Poucas espécies com urease revisada.** A deduplicação removeu a redundância de *S. aureus*,
-  mas não acrescenta espécies: o Swiss-Prot só tem urease revisada de 21 espécies de Firmicutes.
+- **Limiar TrEMBL alto.** Com o padrão de 80 % de identidade, homólogos mais distantes podem não
+  passar pelo filtro e depender das evidências do Bakta e do Pfam.
+- **Cobertura taxonômica das referências.** A composição do conjunto depende da cobertura e da
+  curadoria do UniProt. Linhagens com poucas referências revisadas podem depender mais das
+  evidências do Bakta e do Pfam.
 - **A matriz de presença/ausência só lê o Bakta.** Ela usa o gene e o produto anotados; uma
   proteína achada só pelo BLASTp ou pelo Pfam muda a confiança na tabela de candidatos, mas não
   marca presença na matriz.
